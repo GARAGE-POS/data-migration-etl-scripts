@@ -1,20 +1,16 @@
 import os
 import warnings
 from dotenv import load_dotenv
-import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
+from utils.fks_mapper import get_makes
+from utils.tools import get_logger
 
+log = get_logger('Models')
 warnings.filterwarnings('ignore')
 load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 # -------------------- Connections --------------------
 def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
@@ -29,7 +25,7 @@ def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
     )
     quoted = quote_plus(conn_string)
     engine = create_engine(f'mssql+pyodbc:///?odbc_connect={quoted}')
-    logging.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
+    log.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
     return engine
 
 def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_USERNAME','AZURE_PASSWORD')
@@ -43,11 +39,12 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
             text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
             {"table_name": 'dbo.Model'}
         ).scalar()
-    logging.info(f'Current CDC for dbo.Model: {max_id}')
+        max_id = max_id if not max_id is None else 0
+    log.info(f'Current CDC for dbo.Model: {max_id}')
 
-    query = f"SELECT * FROM dbo.Model WHERE ModelID > {max_id}"
+    query = f"SELECT top 100 * FROM dbo.Model WHERE ModelID > {max_id} ORDER BY ModelID"
     df = pd.read_sql_query(query, source_db)
-    logging.info(f'Extracted {len(df)} rows from dbo.Model')
+    log.info(f'Extracted {len(df)} rows from dbo.Model')
     return df
 
 # -------------------- Transform --------------------
@@ -61,14 +58,16 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
     df = df.rename(columns={
         'ArabicName':'NameAr',
         'ModelID':'OldModelID',
-        'CreatedOn':'CreatedDate',
-        'LastUpdatedDate':'LastUpdateDate'
+        'MakeID':'OldMakeID',
+        'CreatedOn':'CreatedAt',
+        'LastUpdatedDate':'UpdatedAt',
+        'RecommendedLitres':'RecommendedLiters'
     })
 
-    df['CreatedDate'] = df['CreatedDate'].fillna(datetime.now())
-    df['LastUpdateDate'] = df['LastUpdateDate'].fillna(datetime.now())
+    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
+    df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
 
-    df['RecommendedLitres'] = pd.to_numeric(df['RecommendedLitres'], errors='coerce')
+    df['RecommendedLiters'] = pd.to_numeric(df['RecommendedLiters'], errors='coerce')
 
     for col in df.select_dtypes(include='object').columns:
         df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip() != '' else x)
@@ -77,21 +76,18 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
 
 
     # Sync ModelIDs
-    make_ids = pd.read_sql("SELECT MakeID, OldMakeID FROM app.Makes WHERE OldMakeID IS NOT NULL", target_db)
-    df.rename(columns={'MakeID':'OldMakeID'}, inplace=True)
-
-    df = pd.merge(df, make_ids, on='OldMakeID', how='left')
+    df = pd.merge(df, get_makes(target_db), on='OldMakeID', how='left')
     df.drop(columns="OldMakeID", inplace=True)
 
     print(df)
 
-    logging.info('Transformation complete')
+    log.info('Transformation complete')
     return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
 
-    dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'RecommendedLitres':DECIMAL(18,2), 'ImagePath':NVARCHAR(None)}
+    dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'RecommendedLiters':DECIMAL(18,2), 'ImagePath':NVARCHAR(None)}
     max_id = df['OldModelID'].max()
 
     try:
@@ -108,10 +104,10 @@ def load(df: pd.DataFrame, engine: Engine):
                     ADD OldModelID BIGINT NULL;
                 END
             """))
-            logging.info("Verified/Added OldModelID column.")
+            log.info("Verified/Added OldModelID column.")
 
             df.to_sql('Models', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            logging.info(f'dbo.Model loaded successfully')
+            log.info(f'dbo.Model loaded successfully')
 
             conn.execute(
                 text("""
@@ -123,23 +119,24 @@ def load(df: pd.DataFrame, engine: Engine):
                 """),
                 {"table_name": f'dbo.Model', "max_index": int(max_id)}
             )
-            logging.info(f'dbo.Model loaded successfully, CDC updated to {max_id}')
+            log.info(f'dbo.Model loaded successfully, CDC updated to {max_id}')
     except Exception as e:
-        logging.error(f'Failed to load dbo.Model: {e}')
+        log.error(f'Failed to load dbo.Model: {e}')
         raise
 
 # -------------------- Main --------------------
 def main():
     source = source_db_conn()
     target = target_db_conn()
-    df = extract(source, target)
-    if df.empty:
-        logging.info('No new data to load.')
-        return
-    df = transform(df, target)
-    # print(df)
-    # return
-    load(df, target)
+    while True:
+        df = extract(source, target)
+        if df.empty:
+            log.info('No new data to load.')
+            return
+        df = transform(df, target)
+        # print(df)
+        # return
+        load(df, target)
 
 if __name__ == '__main__':
     main()
