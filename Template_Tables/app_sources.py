@@ -1,20 +1,16 @@
 import os
 import warnings
 from dotenv import load_dotenv
-import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
+from utils.fks_mapper import get_accounts
+from utils.tools import get_logger
 
+log = get_logger('AppSources')
 warnings.filterwarnings('ignore')
 load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 # -------------------- Connections --------------------
 def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
@@ -29,19 +25,27 @@ def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
     )
     quoted = quote_plus(conn_string)
     engine = create_engine(f'mssql+pyodbc:///?odbc_connect={quoted}')
-    logging.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
+    log.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
     return engine
 
 def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_USERNAME','AZURE_PASSWORD')
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine) -> pd.DataFrame:
-    """Extract data."""
+def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
+    """Extract new rows based on CDC."""
+    with target_db.connect() as conn:
+        max_id = conn.execute(
+            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
+            {"table_name": 'dbo.AppSource'}
+        ).scalar()
+    
+    max_id = max_id if not max_id is None else 0
+    log.info(f'Current CDC for dbo.AppSource: {max_id}')
 
-    query = f"SELECT * FROM dbo.AppSource"
+    query = f"SELECT * FROM dbo.AppSource WHERE SourceID > {max_id}"
     df = pd.read_sql_query(query, source_db)
-    logging.info(f'Extracted {len(df)} rows from dbo.AppSource')
+    log.info(f'Extracted {len(df)} rows from dbo.AppSource')
     return df
 
 # -------------------- Transform --------------------
@@ -50,12 +54,14 @@ def transform(df: pd.DataFrame, target_db:Engine) -> pd.DataFrame:
     # Keep only necessary columns and rename
     df.drop(columns='LastUpdatedBy', inplace=True)
     df = df.rename(columns={
+        'UserID':'OldUserID',
         'ArabicName':'NameAr',
         'SourceID':'OldSourceID',
-        'LastUpdatedDate':'LastUpdateDate'
+        'LastUpdatedDate':'UpdatedAt'
     })
 
-    df['CreatedDate'] = datetime.now()
+    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
+    df['CreatedAt'] = df['UpdatedAt']
 
     for col in df.select_dtypes(include='object').columns:
         df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
@@ -63,22 +69,21 @@ def transform(df: pd.DataFrame, target_db:Engine) -> pd.DataFrame:
 
 
     # Map Old to New UserIDs
-    user_ids_df = pd.read_sql("SELECT AccountId, OldUserID FROM app.Accounts WHERE OldUserID IS NOT NULL", target_db)
-    user_ids_df.rename(columns={'OldUserID':'UserID'},inplace=True)
-
-    df = pd.merge(df,user_ids_df, on='UserID', how='left')
+    df = pd.merge(df,get_accounts(target_db), on='OldUserID', how='left')
     df = df.drop(columns='UserID')
     df.rename(columns={'AccountId':'UserID'}, inplace=True)
 
 
 
-    logging.info('Transformation complete')
+    log.info('Transformation complete')
     return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None)}
+
+    max_id = df['OldSourceID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -94,22 +99,34 @@ def load(df: pd.DataFrame, engine: Engine):
                     ADD OldSourceID BIGINT NULL;
                 END
             """))
-            logging.info("Verified/Added OldSourceID column.")
+            log.info("Verified/Added OldSourceID column.")
 
             df.to_sql('AppSources', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            log.info(f'dbo.AppSource loaded successfully')
 
-        logging.info(f'dbo.AppSource loaded successfully')
+            # Updating the CDC
+            conn.execute(
+                text("""
+                    MERGE app.[EtlCDC] AS target
+                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
+                    ON target.[TableName] = source.[TableName]
+                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
+                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
+                """),
+                {"table_name": f'dbo.AppSource', "max_index": int(max_id)}
+            )
+            log.info(f'dbo.AppSource loaded successfully, CDC updated to {max_id}')
     except Exception as e:
-        logging.error(f'Failed to load dbo.AppSource: {e}')
+        log.error(f'Failed to load dbo.AppSource: {e}')
         raise
 
 # -------------------- Main --------------------
 def main():
     source = source_db_conn()
     target = target_db_conn()
-    df = extract(source)
+    df = extract(source, target)
     if df.empty:
-        logging.info('No new data to load.')
+        log.info('No new data to load.')
         return
     df = transform(df, target)
     # return
