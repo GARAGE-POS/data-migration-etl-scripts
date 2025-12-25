@@ -21,6 +21,10 @@
 ### SubUsers :
 - `NormalizedUserName` fields have been left empty cause it breaks the **Uniqueness** rule.
 
+### Locations :
+- **10** records with missing `CityID` and `CountryID` of **"SA""** have been filled with **4101** temporarily.
+- **1899** records with missing `LandmarkID`, and **12** records with values different than **(1,2)** have been set to **Null**.
+
 ### Cars :
 - The missing values in `CreatedDate` column have been filled as discussed with **Shariq**.
 - **4385** records with missing `CreatedDate` and `LastUpdatedDate` have been filled with **2000-01-01**.
