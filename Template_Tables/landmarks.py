@@ -1,20 +1,15 @@
 import os
 import warnings
 from dotenv import load_dotenv
-import logging
 from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
+from utils.tools import get_logger
 
+log = get_logger('Landmarks')
 warnings.filterwarnings('ignore')
-load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+load_dotenv() 
 
 # -------------------- Connections --------------------
 def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
@@ -29,7 +24,7 @@ def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
     )
     quoted = quote_plus(conn_string)
     engine = create_engine(f'mssql+pyodbc:///?odbc_connect={quoted}')
-    logging.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
+    log.info(f'Connected to {os.getenv(db_env)} at {os.getenv(server_env)}')
     return engine
 
 def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_USERNAME','AZURE_PASSWORD')
@@ -41,7 +36,7 @@ def extract(source_db: Engine) -> pd.DataFrame:
 
     query = f"SELECT * FROM dbo.Landmark"
     df = pd.read_sql_query(query, source_db)
-    logging.info(f'Extracted {len(df)} rows from dbo.Landmark')
+    log.info(f'Extracted {len(df)} rows from dbo.Landmark')
     return df
 
 # -------------------- Transform --------------------
@@ -54,13 +49,13 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
         'Image':'ImagePath'
     })
 
-    df['CreatedDate'] = datetime.now()
-    df['LastUpdateDate'] = datetime.now()
+    df['UpdatedAt'] = datetime.now()
+    df['CreatedAt'] = df['UpdatedAt'] 
 
     for col in df.select_dtypes(include='object').columns:
         df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
 
-    logging.info('Transformation complete')
+    log.info('Transformation complete')
     return df
 
 # -------------------- Load --------------------
@@ -82,13 +77,13 @@ def load(df: pd.DataFrame, engine: Engine):
                     ADD OldLandmarkID BIGINT NULL;
                 END
             """))
-            logging.info("Verified/Added OldLandmarkID column.")
+            log.info("Verified/Added OldLandmarkID column.")
 
             df.to_sql('Landmarks', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
 
-        logging.info(f'dbo.Landmark loaded successfully')
+        log.info(f'dbo.Landmark loaded successfully')
     except Exception as e:
-        logging.error(f'Failed to load dbo.Landmark: {e}')
+        log.error(f'Failed to load dbo.Landmark: {e}')
         raise
 
 # -------------------- Main --------------------
@@ -97,7 +92,7 @@ def main():
     target = target_db_conn()
     df = extract(source)
     if df.empty:
-        logging.info('No new data to load.')
+        log.info('No new data to load.')
         return
     df = transform(df)
     load(df, target)
