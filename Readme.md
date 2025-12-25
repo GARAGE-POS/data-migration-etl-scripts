@@ -10,10 +10,10 @@
 - Missing fields such `TaxPercentage`, `District`, `Currency`, ...
 
 ### Makes :
-- **9** records have `ImagePath` value of **'-1'**.
+- **9** records have `ImagePath` value of **"-1"**.
 
 ### Models :
-- **631** records have `ImagePath` value of **'-1'**.
+- **631** records have `ImagePath` value of **"-1"**.
 
 
 
@@ -34,8 +34,8 @@
 - **4** records with missing `LocationID` have been dropped during migration.
 
 ### Items :
-- **51** records with missing `Cost`, `Prince`, `IsOpenItem` and `IsInventoryitem` have been filled with **0**.
-- **1221** records with `ItemType` value of **0**, have been set to **other**.  
+- **51** records with missing `Cost`, `Price`, `IsOpenItem` and `IsInventoryitem` have been filled with **0**.
+- **1221** records with `ItemType` value of **0**, have been set to **"other"**.  
 
 ## Orders & Payments
 
