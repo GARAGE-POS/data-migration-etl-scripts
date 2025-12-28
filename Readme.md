@@ -28,7 +28,8 @@
 ### Cars :
 - The missing values in `CreatedDate` column have been filled as discussed with **Shariq**.
 - **4385** records with missing `CreatedDate` and `LastUpdatedDate` have been filled with **2000-01-01**.
-- The formating of the dates has been fixed since they were stored as *Strings* in **V1**.  
+- The formating of the dates has been fixed since they were stored as *VARCHAR* in **V1**. 
+- `Odometer`, `FuelType` and `CarPlateType` columns are missing.
 
 ### CustomerLocations :
 - **7** records with missing `LocationID` have been filled with the value **16**.
@@ -40,6 +41,9 @@
 ### Items :
 - **51** records with missing `Cost`, `Price`, `IsOpenItem` and `IsInventoryitem` have been filled with **0**.
 - **1221** records with `ItemType` value of **0**, have been set to **"other"**.  
+
+### Packages :
+- **3NF** is violeted since `CategoryID` depends on `AccountID`.
 
 ## Orders & Payments
 
