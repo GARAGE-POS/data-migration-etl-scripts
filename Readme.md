@@ -49,12 +49,26 @@
 
 ### Orders :
 - **2133** records **(~0.14%)** have missing `OrderTakerID`.
+- `AmountTotal` mapped to `Subtotal` and `GrandTotal` mapped to `Total`, yet these columns needs more handling.
+- All missing records from **OrderCheckout table**'s fields have been filled with **0**.
+- `ServiceStatusID` is filled temporarily till getting the correct values from **Abu Moussa**.
+- **3NF** violeted since `CarID` depends on `CustomerID`.
+
+
+
+### Payments :
+
 
 ### OrderTechnicians :
 - Missing records in `WorkerID` and `AssistantID` fields.
 
 
 ## Inventory
+
+### Stocks :
+- **31093** records have missing `CurrentStock`.
+- **233** records have missing `ItemID`.
+- Unclear Mapping 
 
 ### Warehouses :
 - **41%** of the records have missing `StoreLocationID` in **V1**. temporarily filled with **4**.
