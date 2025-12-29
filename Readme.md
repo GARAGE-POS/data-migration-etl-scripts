@@ -49,9 +49,10 @@
 
 ### Orders :
 - **2133** records **(~0.14%)** have missing `OrderTakerID`.
-- `AmountTotal` mapped to `Subtotal` and `GrandTotal` mapped to `Total`, yet these columns needs more handling.
+- `AmountTotal` mapped to `Subtotal` and `GrandTotal` mapped to `Total`, yet these columns needs more handling such that `Tax` =  (`Subtotal` - `DiscountAmount`) x **Rate**.
 - All missing records from **OrderCheckout table**'s fields have been filled with **0**.
 - `ServiceStatusID` is filled temporarily till getting the correct values from **Abo Mussa**.
+- **16112** records have `ServiceCharges` value of **-1**. 
 - **3NF** violeted since `CarID` depends on `CustomerID`.
 
 
