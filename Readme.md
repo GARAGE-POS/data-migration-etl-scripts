@@ -51,7 +51,7 @@
 - **2133** records **(~0.14%)** have missing `OrderTakerID`.
 - `AmountTotal` mapped to `Subtotal` and `GrandTotal` mapped to `Total`, yet these columns needs more handling.
 - All missing records from **OrderCheckout table**'s fields have been filled with **0**.
-- `ServiceStatusID` is filled temporarily till getting the correct values from **Abu Moussa**.
+- `ServiceStatusID` is filled temporarily till getting the correct values from **Abo Mussa**.
 - **3NF** violeted since `CarID` depends on `CustomerID`.
 
 
