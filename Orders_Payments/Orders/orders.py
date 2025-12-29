@@ -48,27 +48,37 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
     max_id = max_id if not max_id is None else 0
     log.info(f'Current CDC for dbo.Orders: {max_id}')
 
-    query = f"SELECT TOP 15000 * FROM dbo.Orders WHERE OrderID > {max_id} ORDER BY OrderID"
+    query = f"SELECT TOP 100 OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE OrderID > {max_id} ORDER BY OrderID"
     df = pd.read_sql_query(query, source_db)
+
+    order_ids = tuple(df['OrderID'].values.tolist()) + (0,0)
+    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, ServiceCharges, GrandTotal, AmountPaid, TaxPercent, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', source_db)
+    order_checkout = order_checkout.groupby('OrderID').sum()
+
+    df = pd.merge(df, order_checkout, on='OrderID', how='left')
+
     log.info(f'Extracted {len(df)} rows from dbo.Orders')
     return df
 
 # -------------------- Transform --------------------
-def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
+def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     """Clean and transform Orders data."""
 
-    # Keep only necessary columns and rename
-    df = df[['OrderID', 'LocationID', 'TransactionNo', 'OrderNo', 'CarID', 'CustomerID', 'BayID', 'OrderType', 'OrderCreatedDT', 'OrderMode', 'OrderTakerID', 'StatusID','CreatedOn', 'LastUpdateDT']]
-
+    # rename columns
     df.rename(columns={
         "OrderID":'OldOrderID',
         'LocationID':'OldLocationID',
         'CarID':'OldCarID',
         'BayID':'OldBayID',
         'OrderTakerID':'OldID',
+        'StatusID':'ServiceStatusID',
         'LastUpdateDT':'UpdatedAt',
         'CreatedOn':'CreatedAt',
-        'OrderCreatedDT':'OrderCreatedDate'
+        'AmountTotal':'Subtotal',
+        'AmountDiscount':'DiscountAmount',
+        'ServiceCharges':'AdditionalCharges',
+        'GrandTotal':'Total',
+        'RefundedAmount':'RefundAmount',
         }, inplace=True)
 
 
@@ -79,30 +89,47 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     # Clean nulls
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
-    df['StatusID'] = df['StatusID'].fillna(1)
-    df['CustomerID'] = df['CustomerID'].fillna(np.nan)
-
-    # OrderType and Mode
+    df['ServiceStatusID'] = df['ServiceStatusID'].fillna(1)
+    df['Subtotal'] = df['Subtotal'].fillna(0)
+    df['DiscountAmount'] = df['DiscountAmount'].fillna(0)
+    df['Tax'] = df['Tax'].fillna(0)
+    df['TaxPercent'] = df['TaxPercent'].fillna(0)
+    df['AdditionalCharges'] = df['AdditionalCharges'].fillna(0)
+    df['Total'] = df['Total'].fillna(0)
+    df['AmountPaid'] = df['AmountPaid'].fillna(0)
+    df['DiscountPercent'] = df['DiscountPercent'].fillna(0)
+    df['RefundAmount'] = df['RefundAmount'].fillna(0)
+    df['OrderPaymentStatusID'] = 1
+    df['OldBayID'] = pd.to_numeric(df['OldBayID'], errors='coerce')
     df['OrderType'] = df['OrderType'].map({'New': 0})
-    df['OrderMode'] = df['OrderMode'].map({'New':0, 'Update':1})
-        
 
+    
 
-    df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
-    df = pd.merge(df, get_cars(engine, df['OldCarID']), on='OldCarID', how='left')
-    df = pd.merge(df, get_custom(engine, ['BayID', 'OldBayID'], 'app.Bays'), on='OldBayID', how='left')
-    df = pd.merge(df, get_users(engine, df['OldID']), on='OldSubUserID', how='left')
-    df = pd.merge(df, get_customers(engine, df['OldID']), on='OldSubUserID', how='left')
-
-
-
-    df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID'}, inplace=True)
+    # Foreign Keys Mapping
+    df = pd.merge(df, get_locations(target), on='OldLocationID', how='left')
+    missing_locs = df['LocationID'].isna().sum()
+    if missing_locs:
+        raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
+    
+    df = pd.merge(df, get_cars(target, df['OldCarID']), on='OldCarID', how='left')
+    missing_cars = df['CarID'].isna().sum()
+    if missing_cars:
+        raise IncrementalDependencyError(f'Missing CarIDs: {missing_cars}. Update Cars Table.')
+    
+    df = pd.merge(df, get_users(target, df['OldID']), on='OldID', how='left')
     df.rename(columns={'Id':'OrderTakerID'}, inplace=True)
+    df.drop(columns='OldID', inplace=True)
+    missing_ot = df['OrderTakerID'].isna().sum()
+    if missing_ot:
+        raise IncrementalDependencyError(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
+    
+    df.rename(columns={'CustomerID':'OldID'}, inplace=True)
+    df = pd.merge(df, get_customers(target, df['OldID']), on='OldID', how='left')
 
-    # Missing Order Takers we should fix this
-    # df['OrderTakerID'] = df['OrderTakerID'].fillna(339439)
+    df = pd.merge(df, get_custom(target, ['BayID', 'OldBayID'], 'app.Bays'), on='OldBayID', how='left')
 
-    # print(df[['OrderTakerID', 'LocationID','CarID', 'BayID','CustomerID', 'OrderMode']])
+
+    df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID', 'OrderMode'}, inplace=True)
 
     log.info(f'Transformation complete, df\'s Length is {len(df)}')
     return df
@@ -159,9 +186,9 @@ def main():
             log.info('No new data to load.')
             break
         df = transform(df, target)
-        # print(df.head(20))
         # return
         load(df, target)
+        return
 
 if __name__ == '__main__':
     main()
