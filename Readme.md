@@ -53,9 +53,10 @@
 - All missing records from **OrderCheckout table**'s fields have been filled with **0**.
 - `ServiceStatusID` is filled temporarily till getting the correct values from **Abo Mussa**.
 - **16112** records have `ServiceCharges` value of **-1**. 
-- **3NF** violeted since `CarID` depends on `CustomerID`.
+- **3NF** is violeted since `CarID` depends on `CustomerID`.
 
-
+### OrderDetails :
+- **3NF** is violeted since `PackageID` depends on `ItemID`.
 
 ### Payments :
 
