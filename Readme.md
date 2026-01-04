@@ -3,7 +3,7 @@
 ## Template Tables
 
 ### AppSources :
-- `UserID` column should be renamed as `AccountID` in **V2**.
+- `UserID` field has been filled with the value **2** temporarily.
 
 ### Cities & Countries :
 - Obsolete `CountryCode` in both tables.
@@ -55,8 +55,6 @@
 - **16112** records have `ServiceCharges` value of **-1**. 
 - **3NF** is violeted since `CarID` depends on `CustomerID`.
 
-### OrderDetails :
-- **3NF** is violeted since `PackageID` depends on `ItemID`.
 
 ### Payments :
 
