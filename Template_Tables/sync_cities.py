@@ -59,6 +59,7 @@ def join(old_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
         'Sharja':'Sharjah',
         'Sanaa':"Sana'a",
         'Ha il':"Ha'il",
+        'Hail':"Ha'il",
         'Ta if':"Ta'if",
         'Kuwait':'Kuwait City',
         'Salala':'Salalah',
@@ -96,11 +97,12 @@ def main():
 
     df['CityID'] = pd.to_numeric(df['CityID'],errors='coerce')
     df['OldCityID'] = pd.to_numeric(df['OldCityID'],errors='coerce')
+    df['CountryID'] = pd.to_numeric(df['CountryID'],errors='coerce')
 
 
     df = df.dropna()
 
-    df = df[['CityID','OldCityID']]
+    df = df[['CityID','OldCityID', 'CountryID']]
     print(df)
     # return
     df.to_sql(
@@ -109,7 +111,6 @@ def main():
         schema='app',
         if_exists='append',
         index=False,
-        dtype={'CityID':BIGINT,'OldCityID':BIGINT}
     )
     logging.info('Cities are Synchronized')
 

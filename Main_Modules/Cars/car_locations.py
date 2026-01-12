@@ -54,27 +54,24 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     """Clean and transform Customers data."""
 
     # Keep only necessary columns and rename
-    df = df[['CarLocationID','CarID', 'LocationID', 'RecomendedAmount', 'StatusID','CreatedOn', 'LastUpdatedDate']]
+    df = df[['CarLocationID','CarID', 'LocationID', 'StatusID','CreatedOn', 'LastUpdatedDate']]
 
     df.rename(columns={
         "CarLocationID":'OldCarLocationID',
         'CarID':'OldCarID',
         'LocationID':'OldLocationID',
-        'RecomendedAmount':'Odometer',
         'LastUpdatedDate':'UpdatedAt',
         'CreatedOn':'CreatedAt'}
         ,inplace=True)
     
     
     df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
-    df = pd.merge(df, get_custom(engine, ['CarID', 'OldCarID'], 'app.Cars'), on='OldCarID', how='left')
-
-
     missing_locs = df['LocationID'].isna().sum()
     if missing_locs:
         raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
         
 
+    df = pd.merge(df, get_custom(engine, ['CarID', 'OldCarID'], 'app.Cars'), on='OldCarID', how='left')
     missing_cars = df['CarID'].isna().sum()
     if missing_cars:
         raise IncrementalDependencyError(f'Missing CarIDs: {missing_cars}. Update Cars Table.')
@@ -86,9 +83,6 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['CreatedAt'] = df['CreatedAt'].fillna(datetime(2000, 1,1,0,0,0))
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['StatusID'] = df['StatusID'].fillna(1)
-
-    # Fixing Odometer 
-    df['Odometer'] = pd.to_numeric(df['Odometer'],errors='coerce')
 
 
     log.info(f'Transformation complete, length of df is {len(df)}')

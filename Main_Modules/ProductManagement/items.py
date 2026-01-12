@@ -104,9 +104,9 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     
     
     # ItemTypeID HardCoded
-    item_types = {'oil':1, 'oilfilter':2, 'service':3, 'other':4, 'carwash':5}
-    df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_types.get(x, 4))
-
+    item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
+    item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
+    df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
 
     # CategoryID Matching    
     cat_ids = pd.read_sql(f"SELECT CategoryID, SubCategoryID FROM dbo.SubCategory", source_db)
@@ -125,11 +125,11 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 
 
     # UnitID Matching
-    current_unit_ids = pd.read_sql(f"SELECT UnitID, OldUnitID FROM app.Units WHERE OldUnitID IS NOT NULL", target_db)
+    current_unit_ids = pd.read_sql(f"SELECT UnitID, OldUnitID FROM app.SyncUnits WHERE OldUnitID IS NOT NULL", target_db)
     df = pd.merge(df, current_unit_ids, on='OldUnitID', how='left')
 
-    log.info(f'{df['CategoryID'].isna().sum()} rows with missing CategoryID')
     if df['CategoryID'].isna().sum():
+        log.warning(f'{df['CategoryID'].isna().sum()} rows with missing CategoryID')
         raise IncrementalDependencyError("Update Categories Table.")
     # print(df[df['CategoryID'].isna()][['CategoryID', 'OldCategoryID']])
 
