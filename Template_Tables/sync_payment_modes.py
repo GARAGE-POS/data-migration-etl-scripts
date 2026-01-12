@@ -36,46 +36,39 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract_old_cities(engine: Engine) -> pd.DataFrame:
+def extract_old(engine: Engine) -> pd.DataFrame:
     """Extract data."""
 
-    query = f"SELECT * FROM dbo.City"
+    query = f"SELECT PaymentModeID AS OldPaymentModeID, Name FROM dbo.PaymentModes"
     df = pd.read_sql_query(query, engine)
-    logging.info(f'Extracted {len(df)} rows from dbo.City')
+    logging.info(f'Extracted {len(df)} rows from dbo.PaymentModes')
     return df
 
-def extract_new_cities(engine: Engine) -> pd.DataFrame:
+def extract_new(engine: Engine) -> pd.DataFrame:
     """Extract data."""
 
-    query = f"SELECT * FROM app.Cities"
+    query = f"SELECT PaymentModeID, Name FROM app.PaymentModes"
     df = pd.read_sql_query(query, engine)
-    logging.info(f'Extracted {len(df)} rows from dbo.Cities')
+    logging.info(f'Extracted {len(df)} rows from app.PaymentModes')
     return df
 
 # -------------------- Transform --------------------
 def join(old_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
 
-    city_map = {
-        'Sharja':'Sharjah',
-        'Sanaa':"Sana'a",
-        'Ha il':"Ha'il",
-        'Hail':"Ha'il",
-        'Ta if':"Ta'if",
-        'Kuwait':'Kuwait City',
-        'Salala':'Salalah',
-        'Masqat':'Muscat'
+    new_map = {
+        'STC Pay':'StcPay',
+        'Bank Transfer':'BankTransfer',
+        'Credit Card': 'Credit',
+        'Debit Card': 'Card'
     }
 
-    old_data = old_data.rename(columns={'ID':'OldCityID', 'Name':'CityName'})
-
-    old_data = old_data[['CityName','OldCityID']]
-
-    old_data['CityName'] = old_data['CityName'].map(lambda x: x.strip())
-    old_data['CityName'] = old_data['CityName'].map(lambda x: city_map.get(x) if x in city_map.keys() else x)
-    new_data['CityName'] = new_data['CityName'].map(lambda x: x.strip())
+    old_data['Name'] = old_data['Name'].map(lambda x: x.strip())
+    new_data['Name'] = new_data['Name'].map(lambda x: new_map.get(x) if new_map.get(x) else x)
 
 
-    joined_data = pd.merge(new_data, old_data, how='left', on='CityName')
+    joined_data = pd.merge(new_data, old_data, how='right', on='Name')
+    joined_data.drop_duplicates(subset='OldPaymentModeID', inplace=True)
+    joined_data.dropna(inplace=True)
 
     return joined_data
 
@@ -85,34 +78,21 @@ def main():
     source = source_db_conn()
     target = target_db_conn()
 
-    old_cities = extract_old_cities(source)
-    new_cities = extract_new_cities(target)
+    old = extract_old(source)
+    new = extract_new(target)
 
-    # print(new_cities)
-
-    print()
-
-    df = join(old_cities, new_cities)
-
-
-    df['CityID'] = pd.to_numeric(df['CityID'],errors='coerce')
-    df['OldCityID'] = pd.to_numeric(df['OldCityID'],errors='coerce')
-    df['CountryID'] = pd.to_numeric(df['CountryID'],errors='coerce')
-
-
-    df = df.dropna()
-
-    df = df[['CityID','OldCityID', 'CountryID']]
+    df = join(old, new)
     print(df)
+    df.drop(columns='Name', inplace=True)
     # return
     df.to_sql(
-        name='SyncCities',
+        name='SyncPaymentModes',
         con=target,
         schema='app',
         if_exists='append',
         index=False,
     )
-    logging.info('Cities are Synchronized')
+    logging.info('PaymentModes are Synchronized')
 
 if __name__ == '__main__':
     main()

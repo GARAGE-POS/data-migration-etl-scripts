@@ -7,7 +7,7 @@ from sqlalchemy.exc import OperationalError
 from urllib.parse import quote_plus
 import pandas as pd
 import numpy as np
-from utils.tools import get_logger
+from utils.tools import get_logger, fix_order_checkout
 from utils.fks_mapper import get_custom, get_users, get_locations, get_cars, get_customers
 from utils.custom_err import IncrementalDependencyError
 
@@ -48,14 +48,20 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
     max_id = max_id if not max_id is None else 0
     log.info(f'Current CDC for dbo.Orders: {max_id}')
 
-    query = f"SELECT TOP 100 OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE OrderID > {max_id} ORDER BY OrderID"
+    query = f"SELECT TOP 2000 OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE OrderID > {max_id} AND CreatedOn > '2025-01-01' ORDER BY OrderID"
     df = pd.read_sql_query(query, source_db)
 
     order_ids = tuple(df['OrderID'].values.tolist()) + (0,0)
-    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, ServiceCharges, GrandTotal, AmountPaid, TaxPercent, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', source_db)
-    order_checkout = order_checkout.groupby('OrderID').sum()
+    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', source_db)
+    order_checkout = order_checkout.groupby('OrderID', as_index=False).agg({k:('sum' if k!='DiscountPercent' else 'max') for k in order_checkout.columns})
+
+    order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN {order_ids}', source_db)
+    order_details = order_details.groupby('OrderID', as_index=False).sum()
 
     df = pd.merge(df, order_checkout, on='OrderID', how='left')
+    df = pd.merge(df, order_details, on='OrderID', how='left')
+
+    print(df)
 
     log.info(f'Extracted {len(df)} rows from dbo.Orders')
     return df
@@ -71,14 +77,16 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
         'CarID':'OldCarID',
         'BayID':'OldBayID',
         'OrderTakerID':'OldID',
-        'StatusID':'ServiceStatusID',
+        'StatusID':'LastServiceStatusID',
         'LastUpdateDT':'UpdatedAt',
         'CreatedOn':'CreatedAt',
         'AmountTotal':'Subtotal',
-        'AmountDiscount':'DiscountAmount',
+        'AmountDiscount':'OrderDiscountTotal',
         'ServiceCharges':'AdditionalCharges',
-        'GrandTotal':'Total',
-        'RefundedAmount':'RefundAmount',
+        'Tax':'ItemTaxTotal',
+        'RefundedAmount':'RefundAmountTotal',
+        'AmountPaid':'AmountPaidTotal',
+        'DiscountPercent':'OrderDiscountPercent'
         }, inplace=True)
 
 
@@ -89,21 +97,24 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
 
     # Clean nulls
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
-    df['ServiceStatusID'] = df['ServiceStatusID'].fillna(1)
+    df['LastServiceStatusID'] = df['LastServiceStatusID'].fillna(1)
     df['Subtotal'] = df['Subtotal'].fillna(0)
-    df['DiscountAmount'] = df['DiscountAmount'].fillna(0)
-    df['Tax'] = df['Tax'].fillna(0)
-    df['TaxPercent'] = df['TaxPercent'].fillna(0)
-    df['AdditionalCharges'] = df['AdditionalCharges'].fillna(0)
-    df['Total'] = df['Total'].fillna(0)
-    df['AmountPaid'] = df['AmountPaid'].fillna(0)
-    df['DiscountPercent'] = df['DiscountPercent'].fillna(0)
-    df['RefundAmount'] = df['RefundAmount'].fillna(0)
-    df['OrderPaymentStatusID'] = 1
+    df['OrderDiscountTotal'] = df['OrderDiscountTotal'].fillna(0)
+    df['ItemDiscountTotal'] = df['ItemDiscountTotal'].fillna(0)
+    df['ItemTaxTotal'] = df['ItemTaxTotal'].fillna(0)
+    df['OrderDiscountPercent'] = df['OrderDiscountPercent'].fillna(0)
+    df['GrandTotal'] = df['GrandTotal'].fillna(0)
+    df['AmountPaidTotal'] = df['AmountPaidTotal'].fillna(0)
+    df['RefundAmountTotal'] = df['RefundAmountTotal'].fillna(0)
+    df['LastOrderPaymentStatusID'] = 1
     df['OldBayID'] = pd.to_numeric(df['OldBayID'], errors='coerce')
     df['OrderType'] = df['OrderType'].map({'New': 0})
 
-    
+    # Fixing OrderCheckOuts
+    df = df.apply(fix_order_checkout, axis=1) # type: ignore
+    df['AmountDueTotal'] = df['GrandTotal'] - df['AmountPaidTotal']
+    df.loc[df['OrderDiscountTotal']== 0, 'OrderDiscountTotal'] = df[['OrderDiscountPercent','Subtotal']].apply(lambda row: (row['OrderDiscountPercent'] * row['Subtotal'])/100, axis=1) 
+    df.loc[df['OrderDiscountPercent']== 0, 'OrderDiscountPercent'] = df[['OrderDiscountTotal','Subtotal']].apply(lambda row: 0 if row['Subtotal']==0 else row['OrderDiscountTotal'] / row['Subtotal'], axis=1) 
 
     # Foreign Keys Mapping
     df = pd.merge(df, get_locations(target), on='OldLocationID', how='left')
@@ -111,11 +122,9 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     if missing_locs:
         raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
     
-    df = pd.merge(df, get_cars(target, df['OldCarID']), on='OldCarID', how='left')
-    missing_cars = df['CarID'].isna().sum()
-    if missing_cars:
-        raise IncrementalDependencyError(f'Missing CarIDs: {missing_cars}. Update Cars Table.')
     
+    df = pd.merge(df, get_cars(target, df['OldCarID']), on='OldCarID', how='left')
+   
     df = pd.merge(df, get_users(target, df['OldID']), on='OldID', how='left')
     df.rename(columns={'Id':'OrderTakerID'}, inplace=True)
     df.drop(columns='OldID', inplace=True)
@@ -123,13 +132,18 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     if missing_ot:
         raise IncrementalDependencyError(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
     
+    
     df.rename(columns={'CustomerID':'OldID'}, inplace=True)
     df = pd.merge(df, get_customers(target, df['OldID']), on='OldID', how='left')
 
-    df = pd.merge(df, get_custom(target, ['BayID', 'OldBayID'], 'app.Bays'), on='OldBayID', how='left')
+
+    df = pd.merge(df, get_custom(target, ['BayID', 'OldBayID'], 'app.Bays', 'OldBayID'), on='OldBayID', how='left')
 
 
     df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID', 'OrderMode'}, inplace=True)
+
+    print(df[['GrandTotal', 'Subtotal', 'ItemTaxTotal', 'OrderDiscountTotal']] )
+
 
     log.info(f'Transformation complete, df\'s Length is {len(df)}')
     return df
@@ -188,7 +202,7 @@ def main():
         df = transform(df, target)
         # return
         load(df, target)
-        return
+        
 
 if __name__ == '__main__':
     main()

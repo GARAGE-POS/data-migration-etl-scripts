@@ -89,10 +89,11 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     # current_city_ids = pd.read_sql('SELECT CityID, OldLocationID FROM app.Locations WHERE OldLocationID IS NOT NULL', engine)
     # current_country_ids = pd.read_sql('SELECT CityID, CountryID FROM app.Cities', engine)
 
-    df = pd.merge(df, get_custom(engine, ['OldLocationID, CityID'], 'app.Locations'), on='OldLocationID', how='left')
-    df = pd.merge(df, get_cities(engine), on='CityID', how='left')
-
-    df.drop(columns={'OldLocationID', 'OldCityID'}, inplace=True)
+    df = pd.merge(df, get_custom(engine, ['OldLocationID, CityID'], 'app.Locations', 'OldLocationID'), on='OldLocationID', how='left')
+    log.info(f'len df + locations: {len(df)}')
+    df = pd.merge(df, get_custom(engine, ['CityID', 'CountryID'], 'app.Cities'), on='CityID', how='left')
+    log.info(f'len df + cities: {len(df)}')
+    df.drop(columns={'OldLocationID'}, inplace=True)
 
 
     log.info(f'Transformation complete, df len is {len(df)}')

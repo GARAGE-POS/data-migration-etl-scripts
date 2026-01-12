@@ -6,7 +6,8 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.fks_mapper import get_customers, get_custom
-from utils.tools import get_logger
+from utils.tools import get_logger, parse_date
+from utils.custom_err import IncrementalDependencyError
 
 log = get_logger('Cars')
 warnings.filterwarnings('ignore')
@@ -45,7 +46,7 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
     log.info(f'Current CDC for dbo.Cars: {max_id}')
 
     # query = f"SELECT * FROM dbo.Cars WHERE CarID BETWEEN 1556 AND 23454 ORDER BY CarID"
-    query = f"SELECT TOP 10000 * FROM dbo.Cars WHERE CarID > {max_id} ORDER BY CarID"
+    query = f"SELECT TOP 1000 * FROM dbo.Cars WHERE CarID > {max_id} ORDER BY CarID"
     df = pd.read_sql_query(query, source_db)
     log.info(f'Extracted {len(df)} rows from dbo.Cars')
     return df
@@ -54,15 +55,14 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
 def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.DataFrame:
     """Clean and transform Cars data."""
     # Keep only necessary columns and rename
-    df = df[['CarID', 'CustomerID' , 'MakeID', 'ModelID', 'Year', 'Color', 'VinNo', 'Description', 'RegistrationNo','RecommendedAmount', 'ImagePath', 'CarType', 'StatusID','CreatedOn', 'LastUpdatedDate']]
+    df = df[['CarID', 'CustomerID' , 'MakeID', 'ModelID', 'Year', 'Color', 'VinNo', 'Description', 'RegistrationNo', 'ImagePath', 'CarType', 'StatusID','CreatedOn', 'LastUpdatedDate']]
 
     df.rename(columns={
         "CarID":'OldCarID',
-        "CustomerID":'OldSubUserID',
+        "CustomerID":'OldID',
         'ModelID':'OldModelID',
         'LastUpdatedDate':'UpdatedAt',
         'CreatedOn':'CreatedAt',
-        'RecommendedAmount':'Odometer', /Wrong
         'MakeID':'OldMakeID'
         }, inplace=True)
 
@@ -76,37 +76,27 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df['CarType'] = df['CarType'].fillna(0)
     df['CarPlateType'] = 0
 
-    # Fixing Odometer 
-    df['Odometer'] = pd.to_numeric(df['Odometer'],errors='coerce')
 
 
     # Sync CustomerID and ModelID
-    current_cust_ids = pd.read_sql("SELECT Id, OldSubUserID FROM app.AspNetUsers WHERE UserType='Customer' AND OldSubUserID IS NOT NULL", target_db)
-    current_model_ids = pd.read_sql('SELECT MakeID, ModelID, OldModelID FROM app.Models WHERE OldModelID IS NOT NULL', target_db)
-
-    df = pd.merge(df, get_customers(target_db), on='OldSubUserID', how='left')
-    df = pd.merge(df, get_custom(target_db, ['MakeID', 'ModelID', 'OldModelID'], 'app.Models'), on='OldModelID', how='left')
-
-
-    df.rename(columns={'Id':'CustomerID'},inplace=True)
-
-    df.drop(columns={'OldSubUserID', 'OldMakeID', 'OldModelID'}, inplace=True)
-
-
+    df = pd.merge(df, get_customers(target_db, df['OldID']), on='OldID', how='left')
     missing_cust = df['CustomerID'].isna().sum()
     if missing_cust:
-        log.warning(f'Missing CustomerIDs: {missing_cust}. Update Customers in AspNetUsers Table.')
-        raise
+        log.warning(f'Missing CustomerIDs: {missing_cust}.')
+        raise IncrementalDependencyError('Update Customers in AspNetUsers Table')
+
+    df = pd.merge(df, get_custom(target_db, ['MakeID', 'ModelID', 'OldModelID'], 'app.Models'), on='OldModelID', how='left')
+
 
     # Fixing Date columns
     df.set_index('OldCarID', drop=False, inplace=True)
     df.index.name = None
 
-    mask = df['UpdatedAt'].isna()
-    log.info(f'Missing UpdatedAt is {mask.sum()}')
+    missing_update = df['UpdatedAt'].isna()
+    log.info(f'Missing UpdatedAt is {missing_update.sum()}')
 
     df['CreatedAt'] = df['UpdatedAt']
-    if int(mask.sum()) > 0:
+    if int(missing_update.sum()) > 0:
         car_ids = tuple(df[df['UpdatedAt'].isna()]['OldCarID'].values.tolist()) + (0,0)
         ids = str(car_ids)
         dates = pd.read_sql(f"SELECT CarID, LastUpdatedDate, CreatedOn FROM dbo.CarsLocation_Junc WHERE CarID IN {ids} ORDER BY CarID, CreatedOn", source_db)
@@ -121,29 +111,17 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['CreatedAt'] = df['CreatedAt'].fillna(datetime(2000, 1,1,0,0,0))
 
-    def parse_date(s):
-        formats = [
-            '%b %d %Y %I:%M%p',        # May 29 2020 8:39AM
-            '%m/%d/%Y %I:%M:%S %p',    # 3/3/2025 1:28:20 PM
-        ]
-        for fmt in formats:
-            try:
-                return pd.to_datetime(s, format=fmt)
-            except (ValueError, TypeError):
-                continue
-        return pd.NaT
+
     for col in ['CreatedAt', 'UpdatedAt']:
         df[col] = df[col].apply(parse_date) # type: ignore
 
     # print(df[['CreatedAt', 'UpdatedAt']].head(20))
     missing_date = df[(df['CreatedAt'].isna()) | (df['UpdatedAt'].isna())]
-    log.info(f"Missing dates: {len(missing_date)}")
     if len(missing_date):
-        log.warning('Missing dates from bad parsing.')
-        raise
+        log.warning(f"Missing dates: {len(missing_date)}")
+        raise ValueError("Some of 'CreatedAt' or 'UpdatedAt' values are missing.")
 
-    # if int(mask.sum()) > 0:
-    #     print(df[mask][['OldCarID','UpdatedAt', 'CreatedAt']])
+    df.drop(columns={'OldID', 'OldMakeID', 'OldModelID'}, inplace=True)
 
     log.info(f'Transformation complete, df\'s Length is {len(df)}')
     return df
@@ -201,7 +179,7 @@ def main():
             break
         df = transform(df, source, target)
         load(df, target)
-        return
+        # return
 
 if __name__ == '__main__':
     main()

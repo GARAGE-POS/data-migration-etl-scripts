@@ -6,14 +6,12 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.tools import get_logger
-from utils.fks_mapper import get_items, get_packages, get_orders
+from utils.fks_mapper import get_warehouses, get_items
 from utils.custom_err import IncrementalDependencyError
-
 
 warnings.filterwarnings('ignore')
 load_dotenv()
-
-log = get_logger("OrderDetails")
+log = get_logger('Stocks')
 
 # -------------------- Connections --------------------
 def get_engine(server_env, db_env, user_env, pw_env) -> Engine:
@@ -39,80 +37,64 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
     """Extract data based on CDC."""
     with target_db.begin() as conn:
         max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.OrderDetail'}
+            text("SELECT ISNULL(MaxIndex,0) FROM app.ETLcdc WHERE TableName=:table_name"),
+            {"table_name": 'dbo.inv_Stock'}
         ).scalar()
-    
     max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.OrderDetail: {max_id}')
+    log.info(f'Current CDC for dbo.inv_Stock: {max_id}')
 
-    query = f"SELECT TOP 15000 OrderDetailID, OrderID, ItemID, PackageID, Description, Quantity, Price, Cost, DiscountAmount, CreatedOn, CreatedBy, LastUpdateDT, LastUpdateBy  FROM dbo.OrderDetail WHERE OrderDetailID > {max_id} ORDER BY OrderDetailID"
-    Tax? OrderDetailStatus?
-
+    query = f"SELECT top 1000 StockID, StoreID, ItemID, CurrentStock, CreatedOn, LastUpdatedDate, StutusID FROM dbo.inv_Stock WHERE StockID > {max_id} ORDER BY StockID"
     df = pd.read_sql_query(query, source_db)
-    log.info(f'Extracted {len(df)} rows from dbo.OrderDetail')
+    log.info(f'Extracted {len(df)} rows from dbo.inv_Stock')
     return df
 
 # -------------------- Transform --------------------
 def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
-    """Clean and transform OrderDetails data."""
+    """Clean and transform Users data."""
     # Keep only necessary columns and rename
 
     df.rename(columns={
-        "OrderDetailID":'OldOrderDetailID',
-        'OrderID':'OldOrderID',
-        'ItemID':'OldItemID',
-        'PackageID':'OldPackageID',
-        'LastUpdateDT':'UpdatedAt',
+        "StockID":'OldStockID',
+        "ItemID":'OldItemID',
+        "StoreID":'OldStoreID',
+        "CreatedOn": "CreatedAt",
+        'LastUpdatedDate':'UpdatedAt'
         }, inplace=True)
 
-
     # Clean strings: strip & lowercase
-    df['Description'] = df['Description'].map(lambda x: x.strip() if isinstance(x,str) and x.strip() != 'NULL' else None)
     for col in df.select_dtypes(include='object').columns:
-            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
-            
+        df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None) 
 
-    # Clean nulls
-    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['StatusID'] = df['StatusID'].fillna(1)
+    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
+    df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
 
-    # OrderType and Mode
-    df['OrderType'] = df['OrderType'].map({'New': 0})
-    df['OrderMode'] = df['OrderMode'].map({'New':0, 'Update':1})
-
-
-
-    df = pd.merge(df, get_orders(engine, df['OldOrderID']), on='OldOrderID', how='left')
-    missing_orders = df['OrderID'].isna().sum()
-    if missing_orders:
-        log.warning(f'Missing OrderIDs: {missing_orders}')
-        raise IncrementalDependencyError('Update Orders Table.')
-    
-    df = pd.merge(df, get_packages(engine), on='OldPackageID', how='left')
-    missing_packs = df['PackageID'].isna().sum()
-    if missing_packs:
-        log.warning(f'Missing PackageIDs: {missing_packs}')
-        raise IncrementalDependencyError('Update Packages Table.')
-    
     df = pd.merge(df, get_items(engine, df['OldItemID']), on='OldItemID', how='left')
     missing_items = df['ItemID'].isna().sum()
     if missing_items:
-        log.warning(f'Missing ItemIDs: {missing_items}')
-        raise IncrementalDependencyError('Update Items Table.')
+        raise IncrementalDependencyError(f'Missing ItemIDs: {missing_items}. Update Items Table.')
+    
+    df = pd.merge(df, get_warehouses(engine), on='OldStoreID', how='left')
+    missing_whs = df['WarehouseID'].isna().sum()
+    if missing_whs:
+        raise IncrementalDependencyError(f'Missing WarehouseIDs: {missing_whs}. Update Warehouses Table.')
 
-    df.drop(columns={'OldItemID', 'OldPackageID', 'OldOrderID'}, inplace=True)
+    # Mapping Unclear for MinimumStockToReorder, OpeningStock, AvgCost
 
+    df.drop(columns=[
+        'OldStoreID', 'OldItemID'
+    ], inplace=True)
 
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info('Transformation complete')
+
     return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
 
-    dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
+    dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}    
     
-    max_id = df['OldOrderDetailID'].max()
+    max_id = df['OldStockID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -120,46 +102,48 @@ def load(df: pd.DataFrame, engine: Engine):
             conn.execute(text("""
                 IF NOT EXISTS (
                     SELECT 1 FROM sys.columns
-                    WHERE Name = 'OldOrderDetailID'
-                    AND Object_ID = Object_ID('app.OrderDetails')
+                    WHERE Name = 'OldStockID'
+                    AND Object_ID = Object_ID('app.Stocks')
                 )
                 BEGIN
-                    ALTER TABLE app.OrderDetails
-                    ADD OldOrderDetailID BIGINT NULL;
+                    ALTER TABLE app.Stocks
+                    ADD OldStockID BIGINT NULL;
                 END
             """))
-            log.info("Verified/Added OldOrderDetailID column.")
+            log.info("Verified/Added OldStockID column.")
 
-            df.to_sql('OrderDetails', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.OrderDetail loaded successfully')
+            df.to_sql('Stocks', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            log.info(f'dbo.inv_Stock loaded successfully')
 
             conn.execute(
                 text("""
-                    MERGE app.[EtlCDC] AS target
+                    MERGE app.[ETLcdc] AS target
                     USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
                     ON target.[TableName] = source.[TableName]
                     WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
                     WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
                 """),
-                {"table_name": f'dbo.OrderDetail', "max_index": int(max_id)}
+                {"table_name": f'dbo.inv_Stock', "max_index": int(max_id)}
             )
-            log.info(f'dbo.OrderDetail loaded successfully, CDC updated to {max_id}')
+            log.info(f'dbo.inv_Stock loaded successfully, CDC updated to {max_id}')
     except Exception as e:
-        log.error(f'Failed to load dbo.OrderDetail: {e}')
+        log.error(f'Failed to load dbo.inv_Stock: {e}')
         raise
 
 # -------------------- Main --------------------
 def main():
     source = source_db_conn()
     target = target_db_conn()
-
+    # return
     while True:
         df = extract(source, target)
         if df.empty:
             log.info('No new data to load.')
-            break
+            return
+        
+        # return
         df = transform(df, target)
-        # print(df.head(20))
+        # print(df)
         # return
         load(df, target)
 

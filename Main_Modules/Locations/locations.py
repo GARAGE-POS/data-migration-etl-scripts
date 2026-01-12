@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_logger, clean_contact
 from utils.custom_err import IncrementalDependencyError
 from utils.fks_mapper import get_accounts, get_cities, get_custom
 
@@ -86,7 +86,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df['StatusID'] = df['StatusID'].fillna(1)
     df['IsFeatured'] = pd.to_numeric(df['IsFeatured'], errors='coerce')
     df['IsFeatured'] = df['IsFeatured'].fillna(0)
-    df['LandmarkID'] = df['LandmarkID'].map(lambda x: x if x in [1,2] else None)
+    df['LandmarkID'] = df['LandmarkID'].map(lambda x: x if x in [1,2, 3] else None)
     df.loc[(df['CountryID'] == 'SA') & (df['OldCityID'].isna()), 'OldCityID'] = 4101
 
 
@@ -98,17 +98,26 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     for col in df.select_dtypes(include='object').columns:
         if col != 'Name': df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
         else: df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
+    df['ContactNo'] = df['ContactNo'].apply(clean_contact)
 
 
     # IDs adjustments
+    print(df['OldCityID'].isna().sum())
     df = pd.merge(df, get_cities(target_db)[['CityID','OldCityID']], on='OldCityID', how='left')
     df = pd.merge(df, get_accounts(target_db), on='OldUserID', how='left')
+    missing_acc = df['AccountID'].isna()
+    if missing_acc.sum():
+        log.warning(f"Missing AccountIDs: {missing_acc.sum()}")
+        raise IncrementalDependencyError(f"Missing AccountIDs for UserID = {df[missing_acc]['OldUserID'].values.tolist()}. Update Accounts Table.")
+
+
 
     # Amenities Adjustments
     amenities_junc = get_custom(source_db, ['LocationID', 'AmenitiesID'], 'dbo.LocationAmenitiesJunc')
     amenities_junc.drop_duplicates(subset=['LocationID', 'AmenitiesID'], inplace=True)
     amenities_junc.rename(columns={'AmenitiesID':'OldAmenitiesID', 'LocationID':'OldLocationID'}, inplace=True)
-    amenities = get_custom(target_db, ['Name', 'NameAr', 'AmenitiesID', 'OldAmenitiesID'], 'app.Amenities')
+    amenities = get_custom(target_db, ['Name', 'NameAr', 'AmenitiesID'], 'app.Amenities')
+    amenities = pd.merge(amenities, get_custom(target_db, '*', 'app.SyncAmenities'), how='inner', on='AmenitiesID')
     amenities = pd.merge(amenities, amenities_junc, how='right', on='OldAmenitiesID')
     amenities.drop(columns='OldAmenitiesID', inplace=True)
     amenities = amenities.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="AmenitiesJson")
@@ -118,7 +127,8 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     services_junc = get_custom(source_db, ['LocationID', 'ServiceID'], 'dbo.LocationServiceJunc')
     services_junc.drop_duplicates(subset=['LocationID', 'ServiceID'], inplace=True)
     services_junc.rename(columns={'ServiceID':'OldServiceID', 'LocationID':'OldLocationID'}, inplace=True)
-    services = get_custom(target_db, ['Name', 'NameAr', 'ServiceID', 'OldServiceID'], 'app.Services')
+    services = get_custom(target_db, ['Name', 'NameAr', 'ServiceID'], 'app.Services')
+    services = pd.merge(services, get_custom(target_db, '*', 'app.SyncServices'), how='inner', on='ServiceID')
     services = pd.merge(services, services_junc, how='right', on='OldServiceID')
     services.drop(columns='OldServiceID', inplace=True)
     services = services.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="ServicesJson")
@@ -163,11 +173,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
         columns=['OldUserID', 'OldCityID', 'CountryID'], 
         inplace=True, errors='ignore')
 
-
-    missing_acc = df['AccountID'].isna()
-    log.info(f"Missing AccountID: {missing_acc.sum()}")
-    if missing_acc.sum():
-        raise IncrementalDependencyError(f"Missing AccountIDs for UserID = {df[missing_acc]['OldUserID'].values.tolist()}. Update Accounts Table.")
 
 
     df.sort_values(by='OldLocationID', inplace=True)

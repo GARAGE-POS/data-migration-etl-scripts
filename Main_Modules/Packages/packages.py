@@ -67,8 +67,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     # Clean strings: strip & lowercase
     for col in df.select_dtypes(include='object').columns:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
-    
-    df['ImagePath'] = df['ImagePath'].map(lambda x: x if x != 'NULL' else None)
+            df[col] = df[col].apply(lambda x: x if isinstance(x,str) and x != 'NULL' else None)
 
 
     # Sync AccountID and CategoryID
