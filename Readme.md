@@ -43,7 +43,7 @@
 - **1221** records with `ItemType` value of **0**, have been set to **"other"**.  
 
 ### Packages :
-- **3NF** is violeted since `CategoryID` depends on `AccountID`.
+- **3NF** is violeted since `AccountID` depends on `CategoryID`.
 
 ## Orders & Payments
 
@@ -53,7 +53,7 @@
 - All missing records from **OrderCheckout table**'s fields have been filled with **0**.
 - `ServiceStatusID` is filled temporarily till getting the correct values from **Abo Mussa**.
 - **16112** records have `ServiceCharges` value of **-1**. 
-- **3NF** is violeted since `CarID` depends on `CustomerID`.
+- **3NF** is violeted since `CustomerID` depends on `CarID`.
 
 
 ### Payments :

@@ -61,7 +61,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     df.rename(columns={
         "CustomerLocationID":'OldCustomerLocationID',
-        'CustomerID':'OldSubUserID',
+        'CustomerID':'OldID',
         'LastUpdatedDate':'UpdatedAt',
         'LocationId':'OldLocationID',
         'CreatedOn':'CreatedAt'
@@ -72,25 +72,20 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
 
     df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
-    df = pd.merge(df, get_customers(engine), on='OldID', how='left')
-
-    df.rename(columns={
-        "Id":'CustomerID',
-        }, inplace=True)
-    
-
-    missing_cust = len(df[df['CustomerID'].isna()])
-    if missing_cust:
-        raise IncrementalDependencyError('Update Customers in AspNetUsers Table.')
-
-    missing_loc = len(df[df['LocationID'].isna()])
+    missing_loc = df['LocationID'].isna().sum()
     if missing_loc:
-        raise IncrementalDependencyError('Update Locations Table.')
+        raise IncrementalDependencyError(f'Missing LocationIDs: {missing_loc}. Update Locations Table.')
+    
+    df = pd.merge(df, get_customers(engine, df['OldID']), on='OldID', how='left')
+    missing_cust = df['CustomerID'].isna().sum()
+    if missing_cust:
+        raise IncrementalDependencyError(f'Missing CustomerIDs: {missing_cust}. Update Customers in AspNetUsers Table.')
+
         
     
 
 
-    df.drop(columns={'OldLocationID','OldSubUserID'}, inplace=True)
+    df.drop(columns={'OldLocationID','OldID'}, inplace=True)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(),  'CreatedAt'] = df['UpdatedAt']
 
