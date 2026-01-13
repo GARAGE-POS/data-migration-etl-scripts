@@ -31,18 +31,10 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.ETLcdc WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Users'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Users: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
 
-    query = f"SELECT top 100 * FROM dbo.Users WHERE UserID > {max_id} ORDER BY UserID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.Users WHERE UserID={user_id}"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Users')
     return df
 
@@ -106,8 +98,6 @@ def load(df: pd.DataFrame, engine: Engine):
             'BrandThumbnailImage': NVARCHAR(None),
             'ImagePath': NVARCHAR(None),
             }
-    
-    max_id = df['OldUserID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -128,37 +118,23 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('Accounts', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Users loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[ETLcdc] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Users', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Users loaded successfully, CDC updated to {max_id}')
+
     except Exception as e:
         log.error(f'Failed to load dbo.Users: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int):
     source = source_db_conn()
     target = target_db_conn()
-    # return
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        
-        # return
-        df = transform(df)
-        # print(df)
-        # return
-        load(df, target)
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No new data to load.')
+        return
+    
+    df = transform(df)
 
-if __name__ == '__main__':
-    main()
+    load(df, target)
+
+# if __name__ == '__main__':
+#     main()
