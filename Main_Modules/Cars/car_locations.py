@@ -2,7 +2,7 @@ import os
 import warnings
 from dotenv import load_dotenv
 from datetime import datetime
-from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
+from sqlalchemy import create_engine, text, Engine
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.tools import get_logger
@@ -34,24 +34,20 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.CarsLocation_Junc'}
-        ).scalar()
-    max_id = 0 if max_id is None else max_id
-    log.info(f'Current CDC for dbo.CarsLocation_Junc: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT TOP 10000 * FROM dbo.CarsLocation_Junc WHERE CarLocationID > {max_id} ORDER BY CarLocationID"
-    df = pd.read_sql_query(query, source_db)
+    car_ids = pd.read_sql(f'SELECT CarID FROM dbo.Cars WHERE UserID={user_id}', engine)
+    car_ids = (0,0) + tuple(car_ids['CarID'].values.tolist())
+ 
+    query = f"SELECT * FROM dbo.CarsLocation_Junc WHERE CarID IN {car_ids} AND UserID={user_id} ORDER BY CarLocationID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.CarsLocation_Junc')
     return df
 
 # -------------------- Transform --------------------
 def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
-    """Clean and transform Customers data."""
+    """Clean and transform data."""
 
     # Keep only necessary columns and rename
     df = df[['CarLocationID','CarID', 'LocationID', 'StatusID','CreatedOn', 'LastUpdatedDate']]
@@ -68,13 +64,15 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
     missing_locs = df['LocationID'].isna().sum()
     if missing_locs:
-        raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
+        log.warning(f'Missing LocationIDs: {missing_locs}.')
+        raise IncrementalDependencyError(f'Update Locations Table.')
         
 
     df = pd.merge(df, get_custom(engine, ['CarID', 'OldCarID'], 'app.Cars'), on='OldCarID', how='left')
     missing_cars = df['CarID'].isna().sum()
     if missing_cars:
-        raise IncrementalDependencyError(f'Missing CarIDs: {missing_cars}. Update Cars Table.')
+        log.warning(f'Missing CarIDs: {missing_cars}.')
+        raise IncrementalDependencyError(f'Update Cars Table.')
         
 
     df.drop(columns={'OldLocationID','OldCarID'}, inplace=True)
@@ -90,10 +88,6 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
-
-    # dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
-    
-    max_id = df['OldCarLocationID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -114,35 +108,25 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('CarLocations', con=conn, schema='app', if_exists='append', index=False) # type: ignore
             log.info(f'dbo.CarsLocation_Junc loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.CarsLocation_Junc', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.CarsLocation_Junc loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.CarsLocation_Junc: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
-        load(df, target)
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No new data to load.')
+        return 
+    df = transform(df, target)
+    print(df)
 
-if __name__ == '__main__':
-    main()
+    if if_load:
+        load(df, target)
+        
+
+# if __name__ == '__main__':
+#     main()
