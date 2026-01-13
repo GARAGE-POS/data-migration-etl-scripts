@@ -37,31 +37,24 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Orders'}
-        ).scalar()
-    
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Orders: {max_id}')
 
-    query = f"SELECT TOP 2000 OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE OrderID > {max_id} AND CreatedOn > '2025-01-01' ORDER BY OrderID"
-    df = pd.read_sql_query(query, source_db)
+    location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
+    location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
+  
+    query = f"SELECT OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE LocationID IN {location_ids}"
+    df = pd.read_sql_query(query, engine)
 
     order_ids = tuple(df['OrderID'].values.tolist()) + (0,0)
-    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', source_db)
+    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', engine)
     order_checkout = order_checkout.groupby('OrderID', as_index=False).agg({k:('sum' if k!='DiscountPercent' else 'max') for k in order_checkout.columns})
 
-    order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN {order_ids}', source_db)
+    order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN {order_ids}', engine)
     order_details = order_details.groupby('OrderID', as_index=False).sum()
 
     df = pd.merge(df, order_checkout, on='OrderID', how='left')
     df = pd.merge(df, order_details, on='OrderID', how='left')
-
-    print(df)
 
     log.info(f'Extracted {len(df)} rows from dbo.Orders')
     return df
@@ -98,6 +91,7 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     # Clean nulls
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['LastServiceStatusID'] = df['LastServiceStatusID'].fillna(1)
+    df['LastServiceStatusID'] = df['LastServiceStatusID'].map(lambda x: 105 if x==103 else x)
     df['Subtotal'] = df['Subtotal'].fillna(0)
     df['OrderDiscountTotal'] = df['OrderDiscountTotal'].fillna(0)
     df['ItemDiscountTotal'] = df['ItemDiscountTotal'].fillna(0)
@@ -108,7 +102,7 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     df['RefundAmountTotal'] = df['RefundAmountTotal'].fillna(0)
     df['LastOrderPaymentStatusID'] = 1
     df['OldBayID'] = pd.to_numeric(df['OldBayID'], errors='coerce')
-    df['OrderType'] = df['OrderType'].map({'New': 0})
+    df['OrderType'] = df['OldCarID'].map(lambda x: 0 if isinstance(x, int) else 1)
 
     # Fixing OrderCheckOuts
     df = df.apply(fix_order_checkout, axis=1) # type: ignore
@@ -121,10 +115,11 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     missing_locs = df['LocationID'].isna().sum()
     if missing_locs:
         raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
-    
-    
+
+
     df = pd.merge(df, get_cars(target, df['OldCarID']), on='OldCarID', how='left')
-   
+
+
     df = pd.merge(df, get_users(target, df['OldID']), on='OldID', how='left')
     df.rename(columns={'Id':'OrderTakerID'}, inplace=True)
     df.drop(columns='OldID', inplace=True)
@@ -132,20 +127,16 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     if missing_ot:
         raise IncrementalDependencyError(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
     
-    
     df.rename(columns={'CustomerID':'OldID'}, inplace=True)
     df = pd.merge(df, get_customers(target, df['OldID']), on='OldID', how='left')
 
-
+        
     df = pd.merge(df, get_custom(target, ['BayID', 'OldBayID'], 'app.Bays', 'OldBayID'), on='OldBayID', how='left')
 
 
     df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID', 'OrderMode'}, inplace=True)
 
-    print(df[['GrandTotal', 'Subtotal', 'ItemTaxTotal', 'OrderDiscountTotal']] )
-
-
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -153,8 +144,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldOrderID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -174,35 +163,26 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('Orders', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Orders loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Orders', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Orders loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Orders: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return 
+
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
         load(df, target)
         
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
