@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger, clean_contact
+from utils.tools import get_logger, clean_contact, normalize_ranges
 from utils.custom_err import IncrementalDependencyError
 from utils.fks_mapper import get_accounts, get_cities, get_custom
 
@@ -93,7 +93,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
 
 
     # IDs adjustments
-    print(df['OldCityID'].isna().sum())
     df = pd.merge(df, get_cities(target_db)[['CityID','OldCityID']], on='OldCityID', how='left')
     df = pd.merge(df, get_accounts(target_db), on='OldUserID', how='left')
     missing_acc = df['AccountID'].isna()
@@ -107,43 +106,47 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     amenities_junc = get_custom(source_db, ['LocationID', 'AmenitiesID'], 'dbo.LocationAmenitiesJunc')
     amenities_junc.drop_duplicates(subset=['LocationID', 'AmenitiesID'], inplace=True)
     amenities_junc.rename(columns={'AmenitiesID':'OldAmenitiesID', 'LocationID':'OldLocationID'}, inplace=True)
-    amenities = get_custom(target_db, ['Name', 'NameAr', 'AmenitiesID'], 'app.Amenities')
+    amenities = get_custom(target_db, ['Name', 'AmenitiesID'], 'app.Amenities')
+    amenities['Name'] = amenities['Name'].map(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
+    amenities.dropna(subset='Name', inplace=True)
     amenities = pd.merge(amenities, get_custom(target_db, '*', 'app.SyncAmenities'), how='inner', on='AmenitiesID')
-    amenities = pd.merge(amenities, amenities_junc, how='right', on='OldAmenitiesID')
+    amenities = pd.merge(amenities, amenities_junc, how='inner', on='OldAmenitiesID')
     amenities.drop(columns='OldAmenitiesID', inplace=True)
-    amenities = amenities.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="AmenitiesJson")
-
+    amenities = amenities.groupby('OldLocationID')['Name'].agg(list).reset_index(name="AmenitiesJson")
 
     # Services Adjustements
     services_junc = get_custom(source_db, ['LocationID', 'ServiceID'], 'dbo.LocationServiceJunc')
     services_junc.drop_duplicates(subset=['LocationID', 'ServiceID'], inplace=True)
     services_junc.rename(columns={'ServiceID':'OldServiceID', 'LocationID':'OldLocationID'}, inplace=True)
-    # services = get_custom(target_db, ['Name', 'NameAr', 'ServiceID'], 'app.Services')
     services = get_custom(target_db, ['Name', 'ServiceID'], 'app.Services')
     services = pd.merge(services, get_custom(target_db, '*', 'app.SyncServices'), how='inner', on='ServiceID')
     services = pd.merge(services, services_junc, how='right', on='OldServiceID')
     services.drop(columns='OldServiceID', inplace=True)
     services.dropna(subset='Name', inplace=True)
-    # services = services.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="ServicesJson")
     services = services.groupby('OldLocationID')['Name'].agg(list).reset_index(name="ServicesJson")
 
     # SocialMedia Adjustements
     social_media = get_custom(source_db, ['LocationID', 'Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], 'dbo.Receipt')
+    for col in social_media.select_dtypes(include='object').columns:
+        social_media[col] = social_media[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
     social_media.dropna(subset=['Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], how='all', inplace=True)
     social_media.drop_duplicates(subset=['LocationID', 'Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], inplace=True)
     social_media.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
     social_media = social_media.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="SocialMediaJson")
 
     # WorkingHours Adjustements
-    workinghours = get_custom(source_db, ['LocationID', 'Name', 'ArabicName', 'Time', 'ArabicTime'], 'dbo.LocationWorkingHours')
+    workinghours = get_custom(source_db, ['LocationID','Time AS WorkingHours'], 'dbo.LocationWorkingHours')
     workinghours.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
-    workinghours = workinghours.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="WorkingHours")
+    workinghours.drop_duplicates(subset='OldLocationID', inplace=True)
+    workinghours['WorkingHours'] = workinghours['WorkingHours'].map(lambda x: x.replace(' ', ''))
+    workinghours['WorkingHours'] = workinghours['WorkingHours'].apply(normalize_ranges)
 
     # Images Adjustements
     images = get_custom(source_db, ['LocationID', 'Image'], 'dbo.LocationImages')
     images.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
-    images = images.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="LocationImagesJson")
-
+    images['Image'] = images['Image'].map(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
+    images.dropna(subset='Image', inplace=True)
+    images = images.groupby('OldLocationID')['Image'].agg(list).reset_index(name="LocationImagesJson")
 
     df = pd.merge(df, amenities, on='OldLocationID', how='left')
     df = pd.merge(df, services, on='OldLocationID', how='left')
@@ -151,9 +154,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df = pd.merge(df, workinghours, on='OldLocationID', how='left')
     df = pd.merge(df, images, on='OldLocationID', how='left')
 
-    log.info(f'Null values in WorkingHours: {df['WorkingHours'].map(lambda x: False if isinstance(x,list) else True).sum()}')
-
-    df['WorkingHours'] = df['WorkingHours'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
     df['LocationImagesJson'] = df['LocationImagesJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
     df['SocialMediaJson'] = df['SocialMediaJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
     df['ServicesJson'] = df['ServicesJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
@@ -199,7 +199,7 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldLocationID column.")
 
             df.to_sql('Locations', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) #type: ignore
-
+            log.info(f'dbo.Locations loaded successfully')                
     except Exception as e:
         log.error(f'Failed to load dbo.Locations: {e}')
         raise
