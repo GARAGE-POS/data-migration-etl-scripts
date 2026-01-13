@@ -34,19 +34,14 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Bay'}
-        ).scalar()
-    
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Bay: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT TOP 1000 * FROM dbo.Bay WHERE BayID > {max_id} ORDER BY BayID"
-    df = pd.read_sql_query(query, source_db)
+    location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
+    location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
+
+    query = f"SELECT  * FROM dbo.Bay WHERE locationID IN {location_ids} ORDER BY BayID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Bay')
     return df
 
@@ -79,16 +74,16 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['StatusID'] = df['StatusID'].fillna(1)
 
     df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
-    df.drop(columns={'OldLocationID'}, inplace=True)
 
     missing_loc = df['LocationID'].isna()
-    log.info(f"Missing LocationIDs: {missing_loc.sum()}")
     if missing_loc.sum():
+        log.warning(f"Missing LocationIDs: {missing_loc.sum()}.")
         raise IncrementalDependencyError(f"Update Locations tables.")
         
 
+    df.drop(columns={'OldLocationID'}, inplace=True)
 
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -96,8 +91,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldBayID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -117,35 +110,26 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('Bays', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Bay loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Bay', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Bay loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Bay: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return
+    
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
         load(df, target)
 
-if __name__ == '__main__':
-    main()
+
+# if __name__ == '__main__':
+#     main()
