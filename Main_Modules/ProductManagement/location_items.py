@@ -32,18 +32,23 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(engine: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with engine.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'app.LocationItems'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for app.LocationItems: {max_id}')
-    
-    query = f"SELECT TOP 5000 ItemID, CategoryID, Price, UpdatedAt, CreatedAt, StatusID FROM app.Items WHERE ItemID > {max_id} ORDER BY ItemID"
-    # query = f"SELECT ItemID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Items WHERE CategoryID IN (1938, 1939, 1940, 1941, 1942, 1943, 1944, 1971, 1972, 1973)"
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
+
+    category_query = f"""
+        SELECT CategoryID
+        FROM app.Categories
+        WHERE AccountID IN (
+            SELECT AccountID 
+            FROM app.Accounts 
+            WHERE OldUserID={user_id}    
+        )
+    """
+
+    category_ids = pd.read_sql(category_query,engine)
+    category_ids = (0,0) + tuple(category_ids['CategoryID'].values.tolist())
+
+    query = f"SELECT ItemID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Items WHERE CategoryID IN {category_ids}"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from app.Items')
     return df
@@ -59,13 +64,11 @@ def transform(df: pd.DataFrame, engine: Engine) ->  pd.DataFrame:
 
     df.drop(columns=['CategoryID', 'AccountID'], inplace=True)
 
-    log.info(f'Transformation complete, output rows: {len(df)}')
+    log.info(f'Transformation complete, df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
-
-    max_id = df['ItemID'].max()
 
     try:
         with engine.begin() as conn: 
@@ -74,36 +77,25 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('LocationItems', con=conn, schema='app', if_exists='append', index=False) # type: ignore
             log.info(f'app.LocationItems loaded successfully')
 
-            # # Updating the CDC
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'app.LocationItems', "max_index": int(max_id)}
-            )
-            log.info(f'app.LocationItems loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load app.LocationItems: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
 
     target = target_db_conn()
-    while True:
-        df = extract(target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df = transform(df, target)
-        # print(df)
-        # return
-        load(df, target)
-        # return
+
+    df = extract(user_id, target)
+    if df.empty:
+        log.info('No new data to load.')
+        return
+        
+    df = transform(df, target)
+    print(df)
     
-if __name__ == '__main__':
-    main()
+    if if_load:
+        load(df, target)
+    
+# if __name__ == '__main__':
+#     main()
