@@ -32,6 +32,7 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 
 # -------------------- Extract --------------------
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
     query = f"SELECT * FROM dbo.Users WHERE UserID={user_id}"
     df = pd.read_sql_query(query, engine)
@@ -76,7 +77,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     df['CompanyCode'] = df['CompanyCode'].fillna('')
     df['VATNo'] = pd.to_numeric(df['VATNo'], errors='coerce')
 
-    log.info('Transformation complete')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -124,17 +125,19 @@ def load(df: pd.DataFrame, engine: Engine):
         raise
 
 # -------------------- Main --------------------
-def main(user_id:int):
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
     df = extract(user_id, source)
     if df.empty:
-        log.info('No new data to load.')
+        log.info('No data to load.')
         return
     
     df = transform(df)
+    print(df)
 
-    load(df, target)
+    if if_load:
+        load(df, target)
 
 # if __name__ == '__main__':
 #     main()
