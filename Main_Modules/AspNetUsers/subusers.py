@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.tools import get_logger,  clean_contact
-from utils.fks_mapper import get_cities
+from utils.fks_mapper import get_cities, get_accounts
 
 
 warnings.filterwarnings('ignore')
@@ -33,19 +33,11 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.SubUsers'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.SubUsers: {max_id}')
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-
-    query = f"SELECT top 1000 * FROM dbo.SubUsers WHERE SubUserID > {max_id} ORDER BY SubUserID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.SubUsers WHERE UserID={user_id} ORDER BY SubUserID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.SubUsers')
     return df
 
@@ -54,10 +46,11 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     """Clean and transform SubUsers data."""
 
     # Keep only necessary columns and rename
-    df = df[['SubUserID', 'UserName', 'FirstName','UserType', 'LastName', 'Address', 'Designation', 'ImagePath', 'Password', 'Email', 'ContactNo', 'CityID', 'StatusID', 'LastUpdatedDate']]
+    df = df[['UserID','SubUserID', 'UserName', 'FirstName','UserType', 'LastName', 'Address', 'Designation', 'ImagePath', 'Password', 'Email', 'ContactNo', 'CityID', 'StatusID', 'LastUpdatedDate']]
 
     df.rename(columns={
         "SubUserID":'OldID',
+        "UserID":'OldUserID',
         'LastUpdatedDate':'UpdatedAt',
         'Password':'PasswordHash',
         'CityID':'OldCityID'
@@ -82,27 +75,21 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['AccessFailedCount'] = 0
 
 
-    # df['NormalizedUserName'] = df['UserName'].map(lambda x: x.upper() if isinstance(x,str) else None)
-    # df['NormalizedUserName'] = df['NormalizedUserName'].mask(df.duplicated('NormalizedUserName', keep='first'))
+    df['Designation'] = 'AccountManager'
+
 
     df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
-
+    df['NormalizedUserName'] = df['NormalizedEmail']
 
     df['OldCityID'] = pd.to_numeric(df['OldCityID'], errors='coerce')
 
 
-
-    # current_city_ids = pd.read_sql('Select * from app.SyncCities', engine)
-
     df = pd.merge(df, get_cities(engine), on='OldCityID', how='left')
-    df.drop(columns={'OldCityID'}, inplace=True)
+    df = pd.merge(df, get_accounts(engine, df['OldUserID']), on='OldUserID', how='left')
 
-    # current_country_ids = pd.read_sql('SELECT CityID, CountryID FROM app.Cities', engine)
-    # df = pd.merge(df, current_country_ids, on='CityID', how='left')
+    df.drop(columns={'OldCityID', 'OldUserID'}, inplace=True)
 
-
-
-    log.info('Transformation complete')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -110,8 +97,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -131,35 +116,26 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('AspNetUsers', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.SubUsers loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.SubUsers', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.SubUsers loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Users: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id: int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df = transform(df, target)
-        # print(df.head(5))
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return
+    
+    df = transform(df, target)
+    print(df)
+    
+    if if_load:
         load(df, target)
+    
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
