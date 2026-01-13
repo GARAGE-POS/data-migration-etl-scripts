@@ -35,20 +35,15 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.CustomerLocation_Junc'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.CustomerLocation_Junc: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    max_id = 0 if max_id is None else max_id
+    customer_ids = pd.read_sql(f'SELECT CustomerID FROM dbo.Customers WHERE UserID={user_id}', engine)
+    customer_ids = (0,0) + tuple(customer_ids['CustomerID'].values.tolist())
+    
 
-    query = f"SELECT TOP 5000 * FROM dbo.CustomerLocation_Junc WHERE CustomerLocationID > {max_id} ORDER BY CustomerLocationID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.CustomerLocation_Junc WHERE CustomerID IN {customer_ids} AND UserID={user_id} ORDER BY CustomerLocationID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.CustomerLocation_Junc')
     return df
 
@@ -79,26 +74,22 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_customers(engine, df['OldID']), on='OldID', how='left')
     missing_cust = df['CustomerID'].isna().sum()
     if missing_cust:
-        raise IncrementalDependencyError(f'Missing CustomerIDs: {missing_cust}. Update Customers in AspNetUsers Table.')
+        log.warning(f'Missing CustomerIDs: {missing_cust}.')
+        raise IncrementalDependencyError(f'Update Customers in AspNetUsers Table.')
 
         
-    
-
 
     df.drop(columns={'OldLocationID','OldID'}, inplace=True)
+
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(),  'CreatedAt'] = df['UpdatedAt']
 
-    log.info(f'Transformation complete, length of df is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
-
-    # dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldCustomerLocationID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -118,35 +109,27 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('CustomerLocations', con=conn, schema='app', if_exists='append', index=False) # type: ignore
             log.info(f'dbo.CustomerLocation_Junc loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.CustomerLocation_Junc', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.CustomerLocation_Junc loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.CustomerLocation_Junc: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
-        load(df, target)
+    df = extract(user_id, source)
 
-if __name__ == '__main__':
-    main()
+    if df.empty:
+        log.info('No data to load.')
+        return
+    
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
+        load(df, target)
+        
+
+# if __name__ == '__main__':
+#     main()

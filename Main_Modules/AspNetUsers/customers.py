@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.tools import get_logger, clean_contact
-from utils.fks_mapper import get_cities, get_custom
+from utils.fks_mapper import get_accounts, get_custom
 
 warnings.filterwarnings('ignore')
 load_dotenv()
@@ -32,18 +32,11 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Customers'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Customers: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT TOP 5000 * FROM dbo.Customers WHERE CustomerID > {max_id} ORDER BY CustomerID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.Customers WHERE UserID={user_id} ORDER BY CustomerID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Customers')
     return df
 
@@ -52,9 +45,10 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     """Clean and transform Customers data."""
 
     # Keep only necessary columns and rename
-    df = df[['CustomerID', 'FullName', 'ImagePath', 'Password', 'Email', 'Mobile', 'LocationID', 'StatusID','CreatedOn', 'LastUpdatedDate']]
+    df = df[['UserID','CustomerID', 'FullName', 'ImagePath', 'Password', 'Email', 'Mobile', 'LocationID', 'StatusID','CreatedOn', 'LastUpdatedDate']]
 
     df.rename(columns={
+        "UserID":'OldUserID',
         "CustomerID":'OldID',
         'LastUpdatedDate':'UpdatedAt',
         'Password':'PasswordHash',
@@ -86,17 +80,16 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
 
 
-    # current_city_ids = pd.read_sql('SELECT CityID, OldLocationID FROM app.Locations WHERE OldLocationID IS NOT NULL', engine)
-    # current_country_ids = pd.read_sql('SELECT CityID, CountryID FROM app.Cities', engine)
-
     df = pd.merge(df, get_custom(engine, ['OldLocationID, CityID'], 'app.Locations', 'OldLocationID'), on='OldLocationID', how='left')
-    log.info(f'len df + locations: {len(df)}')
     df = pd.merge(df, get_custom(engine, ['CityID', 'CountryID'], 'app.Cities'), on='CityID', how='left')
-    log.info(f'len df + cities: {len(df)}')
-    df.drop(columns={'OldLocationID'}, inplace=True)
+    
+    df = pd.merge(df, get_accounts(engine, df['OldUserID']), on='OldUserID', how='left')
+
+    
+    df.drop(columns={'OldLocationID', 'OldUserID'}, inplace=True)
 
 
-    log.info(f'Transformation complete, df len is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -104,8 +97,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -125,34 +116,27 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('AspNetUsers', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Customers loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Customers', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Customers loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Customers: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id: int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        load(df, target)
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return
+    
+    df = transform(df, target)
+    print(df)
 
-if __name__ == '__main__':
-    main()
+
+    if if_load:
+        load(df, target)
+    
+
+# if __name__ == '__main__':
+#     main()
