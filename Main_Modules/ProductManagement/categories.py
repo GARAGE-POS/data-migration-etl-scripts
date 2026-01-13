@@ -32,18 +32,14 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Category'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Category: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
+
+    location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
+    location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
     
-    query = f"SELECT top 1000 * FROM dbo.Category WHERE CategoryID > {max_id} and CategoryID <> 2400 ORDER BY CategoryID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.Category WHERE LocationID IN {location_ids} ORDER BY CategoryID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Category')
     return df
 
@@ -51,7 +47,6 @@ def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
 def transform(df: pd.DataFrame, engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Clean and transform Category data."""
     # Keep only necessary columns and rename
-
     df.drop(
         columns=['RowID','SortByAlpha','LastUpdatedBy'], inplace=True
     )
@@ -72,49 +67,33 @@ def transform(df: pd.DataFrame, engine: Engine) -> tuple[pd.DataFrame, pd.DataFr
         else:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
 
-
     df['StatusID'] = df['StatusID'].fillna(1)
     df = df[~df['OldLocationID'].isna()]
 
+
+    # GET AccountIDs
     current_acc_ids = pd.read_sql("SELECT AccountID, OldLocationID FROM app.Locations WHERE OldLocationID IS NOT NULL", engine)
     df = pd.merge(df, current_acc_ids, on='OldLocationID', how='left')
+    missing_acc = df['AccountID'].isna()
+    if missing_acc.sum():
+        log.warning(f"Missing AccountID: {missing_acc.sum()}")
+        raise IncrementalDependencyError(f"Update Accounts and Locations tables.")
+    
+    # DROP DUPLICATED 
+    sync_table = df[['OldCategoryID', 'AccountID', 'Name']].copy()
+    df.sort_values(by=['AccountID', 'StatusID'], inplace=True)
+    df.drop_duplicates(subset=['AccountID', 'Name'], inplace=True)
+
 
     df.drop(columns=['OldLocationID'], inplace=True)
 
-    sync_table = df[['OldCategoryID', 'AccountID', 'Name']].copy()
-
-    df.sort_values(by=['AccountID', 'StatusID'], inplace=True)
-
-    # print(df[df['Name']=='Big Car'])
-
-
-    df.drop_duplicates(subset=['AccountID', 'Name'], inplace=True)
-    # print(df[df['Name']=='Big Car'])
-
-
-    existing_records = pd.read_sql(f"SELECT AccountID, Name FROM app.Categories", engine)
-    existing_records['Duplicated'] = 1
-
-    df = pd.merge(df, existing_records, how='left', on=['AccountID','Name'])
-
-    df = df[df['Duplicated'].isna()]
-    df.drop(columns='Duplicated', inplace=True)
-
-
-    missing_acc = df['AccountID'].isna()
-    log.info(f"Missing AccountID: {missing_acc.sum()}")
-    if missing_acc.sum():
-        print(df[missing_acc])
-        raise IncrementalDependencyError(f"Update Accounts and Locations tables.")
-    
-    log.info(f'Transformation complete, output rows: {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df, sync_table
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, sync_table: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'ImagePath':NVARCHAR(None), 'Description':NVARCHAR(None)}
-    max_id = sync_table['OldCategoryID'].max()
 
     df.drop(columns='OldCategoryID', inplace=True)
 
@@ -128,38 +107,27 @@ def load(df: pd.DataFrame, sync_table: pd.DataFrame, engine: Engine):
             sync_table.to_sql('SyncCategories', con=conn, schema='app', if_exists='append', index=False, dtype={'Name':NVARCHAR(None)}) # type: ignore
             log.info(f'app.SyncCategories updated successfully')
 
-            # # Updating the CDC
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Category', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Category loaded successfully, CDC updated to {max_id}')
+    
     except Exception as e:
         log.error(f'Failed to load dbo.Category: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df, sync_table = transform(df, target)
-        # return
-        # print(sync_table)
-        # print(df)
-        # return
-        load(df, sync_table, target)
-        # return
+
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return
     
-if __name__ == '__main__':
-    main()
+    df, sync_table = transform(df, target)
+    print(df)
+
+    if if_load:
+        load(df, sync_table, target)
+        
+    
+# if __name__ == '__main__':
+#     main()

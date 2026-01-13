@@ -33,20 +33,28 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Items'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    # max_id=0
-    log.info(f'Current CDC for dbo.Items: {max_id}')
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT TOP 10000 * FROM dbo.Items WHERE ItemID > {max_id} ORDER BY ItemID"
-    # query = f"SELECT * FROM dbo.Items WHERE SubCatID in (10764, 10765, 10763, 10762, 10761, 10658, 10657, 10656, 10655, 10654, 10653, 10652)"
-    df = pd.read_sql_query(query, source_db)
+    subcat_query = f"""
+        SELECT SubCategoryID 
+        FROM dbo.SubCategory
+        WHERE CategoryID IN (
+            SELECT CategoryID
+            FROM dbo.Category
+            WHERE LocationID IN (
+                SELECT LocationID
+                FROM dbo.Locations
+                WHERE UserID={user_id}
+            )
+        )
+    """
+
+    subcat_ids = pd.read_sql(subcat_query, engine)
+    subcat_ids = (0,0) + tuple(subcat_ids['SubCategoryID'].values.tolist())
+
+    query = f"SELECT * FROM dbo.Items WHERE SubCatID IN {subcat_ids}"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Items')
     return df
 
@@ -65,6 +73,14 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
         'LastUpdatedDate':'UpdatedAt',
     })
 
+    # Fix String columns
+    for col in df.select_dtypes(include='object').columns:
+        if col != 'Name':
+            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip() != '' else None)
+        else: 
+            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else '')
+    
+
     # Fix Null values
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['CreatedAt'] = df['UpdatedAt']
@@ -76,34 +92,23 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
             df[col] = df[col].apply(lambda x: x if isinstance(x,str) and x != 'NULL' else None)
 
 
-    log.info(f'{len(df[df['IsInventoryItem'].isna()])} rows with missing InventoryItem')
+    log.info(f'{df['IsInventoryItem'].isna().sum()} rows with missing InventoryItem')
     df['IsInventoryItem'] = df['IsInventoryItem'].fillna(False)
 
-    log.info(f'{len(df[df['IsOpenItem'].isna()])} rows with missing OpenItem')
+    log.info(f'{df['IsOpenItem'].isna().sum()} rows with missing OpenItem')
     df['IsOpenItem'] = df['IsOpenItem'].fillna(False)
 
-    log.info(f'{len(df[df['Cost'].isna()])} rows with missing Cost')
+    log.info(f'{df['Cost'].isna().sum()} rows with missing Cost')
     df['Cost'] = df['Cost'].fillna(0)
 
+    log.info(f'{df['SubCategoryID'].isna().sum()} rows with missing SubCategoryID')
 
-    log.info(f'{len(df[df['SubCategoryID'].isna()])} rows with missing SubCategoryID')
-    # print(df[df['SubCategoryID'].isna()])
-    df = df[~df['SubCategoryID'].isna()]
-
-    log.info(f'{len(df[df['Price'].isna()])} rows with missing Price')
+    log.info(f'{df['Price'].isna().sum()} rows with missing Price')
     df['Price'] = df['Price'].fillna(0)
 
 
-
-    # Fix String columns
-    for col in df.select_dtypes(include='object').columns:
-        if col != 'Name':
-            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip() != '' else None)
-        else: 
-            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else '')
     
-    
-    # ItemTypeID HardCoded
+    # ItemTypeID MAP
     item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
     item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
     df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
@@ -131,26 +136,14 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     if df['CategoryID'].isna().sum():
         log.warning(f'{df['CategoryID'].isna().sum()} rows with missing CategoryID')
         raise IncrementalDependencyError("Update Categories Table.")
-    # print(df[df['CategoryID'].isna()][['CategoryID', 'OldCategoryID']])
 
 
     # Handling Duplicates
     sync_table = df[['OldItemID', 'CategoryID','Name']].copy()
-    
-    existing_records = pd.read_sql(f"SELECT CategoryID, Name FROM app.Items", target_db)
-    existing_records['Duplicated'] = 1
-
-    df = pd.merge(df, existing_records, how='left', on=['CategoryID','Name'])
-    
-
-
-    df = df[df['Duplicated'].isna()]
 
     df.sort_values(by=['CategoryID', 'StatusID', 'Price'], ascending=[True, True, False], inplace=True)
 
-
-    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'Duplicated', 'OldItemID'], inplace=True)
-
+    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'OldItemID'], inplace=True)
 
     df.drop_duplicates(subset=['CategoryID','Name'], inplace=True)
     
@@ -162,9 +155,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 def load(df: pd.DataFrame, sync_t: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'Description':NVARCHAR(None), 'DescriptionAr':NVARCHAR(None), 'ImagePath':NVARCHAR(None)}
-    max_id = sync_t['OldItemID'].max()
-
-    # df.drop(columns='OldItemID', inplace=True)
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -175,34 +165,26 @@ def load(df: pd.DataFrame, sync_t: pd.DataFrame, engine: Engine):
             sync_t.to_sql('SyncItems', con=conn, schema='app', if_exists='append', index=False, dtype={'Name':NVARCHAR(None)}) # type: ignore
             log.info(f'app.SyncItems updated successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Items', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Items loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Items: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df,sync_table = transform(df, source, target)
-        # return
-        load(df, sync_table, target)
-        # return 
 
-if __name__ == '__main__':
-    main()
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return
+    
+    df,sync_table = transform(df, source, target)
+    print(df)
+
+    if if_load:
+        load(df, sync_table, target)
+        
+
+# if __name__ == '__main__':
+#     main()
