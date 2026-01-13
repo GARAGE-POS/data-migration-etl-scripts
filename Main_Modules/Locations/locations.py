@@ -36,20 +36,11 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract new rows based on CDC."""
-    with target_db.connect() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Locations'}
-        ).scalar()
-    
-    max_id = max_id if not max_id is None else 0
-    # max_id=0
-    log.info(f'Current CDC for dbo.Locations: {max_id}')
-
-    query = f"SELECT top 100 * FROM dbo.Locations WHERE LocationID > {max_id} ORDER BY LocationID"
-    df = pd.read_sql_query(query, source_db)
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract new rows based on UserID."""
+ 
+    query = f"SELECT * FROM dbo.Locations WHERE UserID={user_id} ORDER BY LocationID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Locations')
     return df
 
@@ -127,11 +118,14 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     services_junc = get_custom(source_db, ['LocationID', 'ServiceID'], 'dbo.LocationServiceJunc')
     services_junc.drop_duplicates(subset=['LocationID', 'ServiceID'], inplace=True)
     services_junc.rename(columns={'ServiceID':'OldServiceID', 'LocationID':'OldLocationID'}, inplace=True)
-    services = get_custom(target_db, ['Name', 'NameAr', 'ServiceID'], 'app.Services')
+    # services = get_custom(target_db, ['Name', 'NameAr', 'ServiceID'], 'app.Services')
+    services = get_custom(target_db, ['Name', 'ServiceID'], 'app.Services')
     services = pd.merge(services, get_custom(target_db, '*', 'app.SyncServices'), how='inner', on='ServiceID')
     services = pd.merge(services, services_junc, how='right', on='OldServiceID')
     services.drop(columns='OldServiceID', inplace=True)
-    services = services.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="ServicesJson")
+    services.dropna(subset='Name', inplace=True)
+    # services = services.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="ServicesJson")
+    services = services.groupby('OldLocationID')['Name'].agg(list).reset_index(name="ServicesJson")
 
     # SocialMedia Adjustements
     social_media = get_custom(source_db, ['LocationID', 'Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], 'dbo.Receipt')
@@ -178,7 +172,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df.sort_values(by='OldLocationID', inplace=True)
 
 
-    log.info(f'Transformation complete, output: {len(df)} rows')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -206,36 +200,23 @@ def load(df: pd.DataFrame, engine: Engine):
 
             df.to_sql('Locations', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) #type: ignore
 
-            # Update CDC only after successful insert
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Locations', "max_index": int(max_id)}
-            )
-        log.info(f'dbo.Locations loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Locations: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df = transform(df, source, target)
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No new data to load.')
+        return
+    df = transform(df, source, target)
+    print(df)
+    if if_load:
         load(df, target)
-        # return
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()

@@ -37,20 +37,14 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Receipt'}
-        ).scalar()
-    
-    max_id = max_id if not max_id is None else 0
-    # max_id = 0
-    log.info(f'Current CDC for dbo.Receipt: {max_id}')
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
+  
+    location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
+    location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
 
-    query = f"SELECT TOP 100 * FROM dbo.Receipt WHERE ReceiptID > {max_id} ORDER BY ReceiptID"
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.Receipt WHERE locationID IN {location_ids} ORDER BY ReceiptID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Receipt')
     return df
 
@@ -80,7 +74,7 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
 
     missing_locs = df['LocationID'].isna()
     if missing_locs.sum():
-        log.error(f"Missing LocationIDs: {missing_locs.sum()}")
+        log.warning(f"Missing LocationIDs: {missing_locs.sum()}")
         raise IncrementalDependencyError("Update Locations Table.")
 
     df.drop(columns=['IsActive', 'RowID', 'OldLocationID', 'CreatedBy', 'LastUpdatedBy'], inplace=True)
@@ -94,7 +88,7 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
 
     df = df.sort_values(by='OldReceiptID')
 
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -123,36 +117,24 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('LocationSettings', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Receipt loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Receipt', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Receipt loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Receipt: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No new data to load.')
+        return
+    df = transform(df, target)
+    print(df)
+    if if_load:
         load(df, target)
-        # return
+    
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
