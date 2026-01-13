@@ -35,21 +35,25 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.OrderDetail'}
-        ).scalar()
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
+
+    order_query = f"""
+        SELECT OrderID
+        FROM dbo.Orders
+        WHERE LocationID IN (
+            SELECT LocationID
+            FROM dbo.Locations
+            WHERE UserID={user_id}
+        )
+    """
+
+    order_ids = pd.read_sql(order_query, engine)
+    order_ids = (0,0) + tuple(order_ids['OrderID'].values.tolist())
     
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.OrderDetail: {max_id}')
-
-    query = f"SELECT TOP 100 OrderDetailID, OrderID, ItemID, PackageID, Description, Quantity, Price, Cost, DiscountAmount, RefundAmount, RefundQty, StatusID, CreatedOn, CreatedBy, LastUpdateDT, LastUpdateBy  FROM dbo.OrderDetail WHERE OrderDetailID > {max_id} and CreatedOn > '2025-01-01' ORDER BY OrderDetailID"
-
-
-    df = pd.read_sql_query(query, source_db)
+    
+    query = f"SELECT OrderDetailID, OrderID, ItemID, PackageID, Description, Quantity, Price, Cost, DiscountAmount, RefundAmount, RefundQty, StatusID, CreatedOn, CreatedBy, LastUpdateDT, LastUpdateBy  FROM dbo.OrderDetail WHERE OrderID IN {order_ids}"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.OrderDetail')
 
     return df
@@ -123,21 +127,14 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
 
     df = pd.merge(df, get_packages(engine), on='OldPackageID', how='left')
-    missing_packs = df['PackageID'].isna().sum()
-    if missing_packs:
-        log.warning(f'Missing PackageIDs: {missing_packs}')
-        raise IncrementalDependencyError('Update Packages Table.')
     
     df = pd.merge(df, get_items(engine, df['OldItemID']), on='OldItemID', how='left')
-    missing_items = df['ItemID'].isna().sum()
-    if missing_items:
-        log.warning(f'Missing ItemIDs: {missing_items}')
-        raise IncrementalDependencyError('Update Items Table.')
+
 
     df.drop(columns={'OldItemID', 'OldPackageID', 'OldOrderID', 'OrderDiscountTotal'}, inplace=True)
 
 
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info(f'Transformation complete, df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -145,8 +142,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldOrderDetailID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -166,35 +161,26 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('OrderLineItems', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.OrderDetail loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.OrderDetail', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.OrderDetail loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.OrderDetail: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
-        load(df, target)
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return 
 
-if __name__ == '__main__':
-    main()
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
+        load(df, target)
+        
+
+# if __name__ == '__main__':
+#     main()

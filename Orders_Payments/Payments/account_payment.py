@@ -3,7 +3,7 @@ import sys
 import warnings
 from dotenv import load_dotenv
 from datetime import datetime
-from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
+from sqlalchemy import create_engine, text, Engine
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.tools import get_logger
@@ -33,21 +33,12 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(engine: Engine) -> pd.DataFrame:
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
 
-    with engine.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'app.AccountPaymentModes'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for app.AccountPaymentModes: {max_id}')
-
-    df = pd.read_sql_query( f"SELECT TOP 1000 AccountID, StatusID FROM app.Accounts WHERE AccountID > {max_id} ORDER BY AccountID", engine)
+    df = pd.read_sql_query( f"SELECT AccountID, StatusID FROM app.Accounts WHERE OldUserID={user_id}", engine)
     log.info(f'Extracted {len(df)} rows from app.Accounts')
 
-
-    payment_modes = pd.read_sql_query( f"SELECT PaymentModeID FROM app.PaymentModes", engine)
+    payment_modes = pd.read_sql_query(f"SELECT PaymentModeID FROM app.PaymentModes", engine)
 
 
     df = pd.merge(df, payment_modes, how='cross')
@@ -58,7 +49,7 @@ def extract(engine: Engine) -> pd.DataFrame:
     df['CreatedAt'] = df['UpdatedAt']
 
 
-    log.info(f'Transformation completed. Output: {len(df)} rows.')
+    log.info(f'Transformation completed. df rows: {len(df)}')
     return df
 
 
@@ -66,8 +57,6 @@ def extract(engine: Engine) -> pd.DataFrame:
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
     
-    max_id = df['AccountID'].max()
-
     try:
         with engine.begin() as conn: 
 
@@ -75,32 +64,24 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('AccountPaymentModes', con=conn, schema='app', if_exists='append', index=False) # type: ignore
             log.info(f'app.AccountPaymentModes loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'app.AccountPaymentModes', "max_index": int(max_id)}
-            )
-            log.info(f'app.AccountPaymentModes loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load app.LocationItems: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
+
     target = target_db_conn()
 
+    df = extract(user_id, target)
+    if df.empty:
+        log.info('No data to load.')
+        return
+        
+    print(df)
     
-    while True:
-        df = extract(target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
+    if if_load:
         load(df, target)
-    
-if __name__ == '__main__':
-    main()
+
+# if __name__ == '__main__':
+#     main()
