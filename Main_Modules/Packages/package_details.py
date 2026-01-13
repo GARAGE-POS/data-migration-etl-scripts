@@ -33,19 +33,14 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.PackageDetails'}
-        ).scalar()
+def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
     
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.PackageDetails: {max_id}')
+    package_ids = pd.read_sql(f'SELECT PackageID FROM dbo.Packages WHERE UserID={user_id}', engine)
+    package_ids = (0,0) + tuple(package_ids['PackageID'].values.tolist())
 
-    query = f"SELECT TOP 5000 * FROM dbo.PackageDetails WHERE PackageDetailID > {max_id} ORDER BY PackageDetailID "
-    df = pd.read_sql_query(query, source_db)
+    query = f"SELECT * FROM dbo.PackageDetails WHERE PackageID={package_ids} ORDER BY PackageDetailID "
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.PackageDetails')
     return df
 
@@ -79,7 +74,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df.drop(columns={'OldPackageID', 'OldItemID'}, inplace=True)
 
 
-    log.info(f'Transformation complete, df\'s Length is {len(df)}')
+    log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
@@ -87,8 +82,6 @@ def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldPackageDetailID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -108,36 +101,26 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('PackageDetails', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.PackageDetails loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.PackageDetails', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.PackageDetails loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.PackageDetails: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No new data to load.')
+        return
+    
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
         load(df, target)
         # return
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
