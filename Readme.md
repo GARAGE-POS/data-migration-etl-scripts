@@ -11,6 +11,25 @@
 
 ### Makes :
 - **9** records have `ImagePath` value of **"-1"**.
+- **24** records in **Cars Tables** is affected by incorrectly encoded `Name` *("???")*
+- **0** records in **Cars Tables** is affected by **"."**
+- **5** records in **Cars Tables** is affected by **"Bajaj"**
+- **1** records in **Cars Tables** is affected by **"Chinese"**
+- **5371** records in **Cars Tables** is affected by **"EBRAQ"**
+- **1** records in **Cars Tables** is affected by **"Haojue"**
+- **2** records in **Cars Tables** is affected by **"HELI"**
+- **0** records in **Cars Tables** is affected by **"Hero"**
+- **3** records in **Cars Tables** is affected by **"INDIAN"**
+- **0** records in **Cars Tables** is affected by **"New Svg"**
+- **0** records in **Cars Tables** is affected by **"rafu"**
+- **7** records in **Cars Tables** is affected by **"Robi"**
+- **0** records in **Cars Tables** is affected by **"Saniya"**
+- **0** records in **Cars Tables** is affected by **"Sun"**
+- **0** records in **Cars Tables** is affected by **"test%"** 
+- **25** records in **Cars Tables** is affected by **" TVS"**
+- **10** records in **Cars Tables** is affected by **"UD"**
+- **0** records in **Cars Tables** is affected by **"VEHICLEC LOADER"**
+- **11** records in **Cars Tables** is affected by **"XXXX"**
 
 ### Models :
 - **631** records have `ImagePath` value of **"-1"**.
