@@ -32,16 +32,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 
 # -------------------- Extract --------------------
 def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Make'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Make: {max_id}')
+    """Extract data."""
 
-    query = f"SELECT top 1000 * FROM dbo.Make WHERE MakeID > {max_id} ORDER BY MakeID"
+    query = f"SELECT * FROM dbo.Make ORDER BY MakeID"
     df = pd.read_sql_query(query, source_db)
     log.info(f'Extracted {len(df)} rows from dbo.Make')
     return df
@@ -97,18 +90,7 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('Makes', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Make loaded successfully')
 
-                        # Updating the CDC
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Make', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Make loaded successfully, CDC updated to {max_id}')
+
     except Exception as e:
         log.error(f'Failed to load dbo.Make: {e}')
         raise
@@ -120,11 +102,11 @@ def main():
     while True:
         df = extract(source, target)
         if df.empty:
-            log.info('No new data to load.')
+            log.info('No data to load.')
             return
         df = transform(df)
         # return
         load(df, target)
-
+        return
 if __name__ == '__main__':
     main()

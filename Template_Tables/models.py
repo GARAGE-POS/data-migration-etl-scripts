@@ -33,16 +33,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 
 # -------------------- Extract --------------------
 def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Model'}
-        ).scalar()
-        max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Model: {max_id}')
+    """Extract data."""
 
-    query = f"SELECT top 100 * FROM dbo.Model WHERE ModelID > {max_id} ORDER BY ModelID"
+    query = f"SELECT * FROM dbo.Model ORDER BY ModelID"
     df = pd.read_sql_query(query, source_db)
     log.info(f'Extracted {len(df)} rows from dbo.Model')
     return df
@@ -109,17 +102,6 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql('Models', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.Model loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Model', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Model loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Model: {e}')
         raise
@@ -137,6 +119,6 @@ def main():
         # print(df)
         # return
         load(df, target)
-
+        return
 if __name__ == '__main__':
     main()
