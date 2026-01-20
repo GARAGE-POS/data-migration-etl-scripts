@@ -77,7 +77,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df['StatusID'] = df['StatusID'].fillna(1)
     df['IsFeatured'] = pd.to_numeric(df['IsFeatured'], errors='coerce')
     df['IsFeatured'] = df['IsFeatured'].fillna(0)
-    df['LandmarkID'] = df['LandmarkID'].map(lambda x: x if x in [1,2, 3] else None)
+    df['LandmarkID'] = df['LandmarkID'].map(lambda x: x if x in [1,2] else None)
     df.loc[(df['CountryID'] == 'SA') & (df['OldCityID'].isna()), 'OldCityID'] = 4101
 
 
@@ -161,6 +161,10 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
 
     df[['WorkingHours', "LocationImagesJson", "SocialMediaJson", "ServicesJson", "AmenitiesJson"]] = df[['WorkingHours', "LocationImagesJson", "SocialMediaJson", "ServicesJson", "AmenitiesJson"]].astype("string")
 
+    df['LocationImagesJson'] = df['LocationImagesJson'].fillna('[]')
+    df['SocialMediaJson'] = df['SocialMediaJson'].fillna('{}')
+    df['ServicesJson'] = df['ServicesJson'].fillna('[]')
+    df['AmenitiesJson'] = df['AmenitiesJson'].fillna('[]')
 
    # Dropping columns
     df.drop(
