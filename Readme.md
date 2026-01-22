@@ -11,26 +11,28 @@
 
 ### Makes :
 - **9** records have `ImagePath` value of **"-1"**.
-- **24** records in **Cars Tables** is affected by incorrectly encoded `Name` *("???")*
-- **0** records in **Cars Tables** is affected by **"."**
-- **5** records in **Cars Tables** is affected by **"Bajaj"**
-- **1** records in **Cars Tables** is affected by **"Chinese"**
-- **5371** records in **Cars Tables** is affected by **"EBRAQ"**
-- **1** records in **Cars Tables** is affected by **"Haojue"**
-- **2** records in **Cars Tables** is affected by **"HELI"**
-- **0** records in **Cars Tables** is affected by **"Hero"**
-- **3** records in **Cars Tables** is affected by **"INDIAN"**
-- **0** records in **Cars Tables** is affected by **"New Svg"**
-- **0** records in **Cars Tables** is affected by **"rafu"**
-- **7** records in **Cars Tables** is affected by **"Robi"**
-- **0** records in **Cars Tables** is affected by **"Saniya"**
-- **0** records in **Cars Tables** is affected by **"Sun"**
-- **31** records in **Cars Tables** is affected by **"Tank"**
-- **0** records in **Cars Tables** is affected by **"test%"** 
-- **25** records in **Cars Tables** is affected by **" TVS"**
-- **10** records in **Cars Tables** is affected by **"UD"**
-- **0** records in **Cars Tables** is affected by **"VEHICLEC LOADER"**
-- **11** records in **Cars Tables** is affected by **"XXXX"**
+- **24** records in **Cars** is affected by incorrectly encoded `Name` *(ie: "???")*
+- **0** records in **Cars** is affected by **"."**
+- **5** records in **Cars** is affected by **"Bajaj"**
+- **1** records in **Cars** is affected by **"Chinese"**
+- **5371** records in **Cars** is affected by **"EBRAQ"**
+- **1** records in **Cars** is affected by **"Haojue"**
+- **2** records in **Cars** is affected by **"HELI"**
+- **0** records in **Cars** is affected by **"Hero"**
+- **3** records in **Cars** is affected by **"INDIAN"**
+- **0** records in **Cars** is affected by **"New Svg"**
+- **0** records in **Cars** is affected by **"rafu"**
+- **7** records in **Cars** is affected by **"Robi"**
+- **0** records in **Cars** is affected by **"Saniya"**
+- **0** records in **Cars** is affected by **"Sun"**
+- **31** records in **Cars** is affected by **"Tank"**
+- **0** records in **Cars** is affected by **"test%"** 
+- **25** records in **Cars** is affected by **" TVS"**
+- **10** records in **Cars** is affected by **"UD"**
+- **0** records in **Cars** is affected by **"VEHICLEC LOADER"**
+- **11** records in **Cars** is affected by **"XXXX"**
+- **9** records in **Cars** is affected by **"CHAIRMAN"**
+
 
 ### Models :
 - **631** records have `ImagePath` value of **"-1"**.
