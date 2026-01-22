@@ -13,3 +13,8 @@ etl_notes.ipynb
 pyproject.toml
 Status.csv
 uv.lock
+
+
+.env
+*.csv
+*.ipynb
