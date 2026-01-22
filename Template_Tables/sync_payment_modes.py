@@ -52,7 +52,7 @@ def extract_new(engine: Engine) -> pd.DataFrame:
 def join(old_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
 
     old_data['Name'] = old_data['Name'].map(lambda x: x.strip().replace(' ', '').lower())
-    new_data['Name'] = new_data['Name'].map(lambda x: x.strip().replace(' ', '').lower())
+    new_data['Name'] = new_data['Name'].map(lambda x: x.strip().replace(' ', '').replace('Customers','').lower())
 
 
     joined_data = pd.merge(new_data, old_data, how='inner', on='Name')

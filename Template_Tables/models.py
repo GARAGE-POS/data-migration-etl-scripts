@@ -32,10 +32,12 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
+def extract(source_db: Engine) -> pd.DataFrame:
     """Extract data."""
 
-    query = f"SELECT * FROM dbo.Model ORDER BY ModelID"
+    invalid_models = ('2', '3', '3', '5', '6', '7', '8', '9', '86', '92', '93', '99', '107', '108', '206', '307', '308', '320', '360', '404', '406', '407', '408', '500', '508', '520', '520', '595', '620', '745', '750', '820', '850', '900', '911', '960', '1616', '3008', '9000', '09-Mar', '09-May', '????? ??? ?? ????????', '03+', '208E', '208E', 'A', 'A', 'Accent', 'Accent', 'Actyon', 'Actyon', 'ACURA', 'ACURA', 'ACURA rafi1', 'Amarok', 'Amarok', 'Arrizo5Pro', 'Arrizo5Pro', 'Arrizo5Pro', 'Arrizo5Pro', 'Arrizo5Pro', 'Arrizo5Pro', 'Arrizo6Pro', 'Arrizo6Pro', 'Arrizo6Pro', 'Arrizo6Pro', 'BOXER', 'Boxer', 'BT 200', 'BT 200', 'BT 200', 'C300', 'C300', 'Camaro ss 1Le', 'CAMARO SS 1LE', 'CANTER', 'CANTER', 'CANTER', 'CLA 250', 'CLA 250', 'compass', 'compass', 'COOLRAY', 'COOLRAY', 'cooper', 'COOPER', 'Corvette', 'Corvette', 'Cougar', 'Cougar', 'CX 5', 'CX 5', 'Defender', 'Defender', 'Defender 90', 'Defender 90', 'Defender 90', 'Defender 90', 'Defender 90', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Discovery Sport', 'Explorer', 'Explorer', 'F40', 'f40', 'f40', 'F5', 'F5', 'F7', 'F7', 'Focus', 'Focus', 'Fusion', 'Fusion', 'G500 4x4', 'G500 4x4', 'G63', 'G63', 'GLE 500', 'GLE 500', 'GLE 500', 'GLE 500', 'Grand vitara', 'Grand vitara', 'GS', 'GS', 'GT', 'Gt', 'GT', 'H1', 'H1', 'H5', 'H5', 'H7', 'H7', 'H9', 'H9', 'highlander', 'Highlander', 'HS5', 'HS5', 'K8', 'K8', 'Kicks', 'Kicks', 'L 200', 'L 200', 'L 200', 'L 200', 'Legend', 'Legend', 'Logan', 'LOGAN', 'LS 460', 'LS 460', 'LS 460', 'Malibu', 'Malibu', 'Matrix', 'Matrix', 'mazda 3', 'mazda 3', 'mazda 3', 'MDX', 'MDX', 'Mini cooper', 'Mini Cooper', 'mini cooper s', 'Mini Cooper S', 'Mistral', 'Mistral', 'Omoda C5', 'Omoda C5', 'Pick up', 'Pick up', 'POER', 'Poer', 'Q 8', 'Q 8', 'Range Rover', 'Range Rover', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Evoque', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'Range Rover Velar', 'RDX', 'RDX', 'REWARD', 'REWARD', 'S 3', 'S 3', 'S2', 'S2', 'S3', 'S3', 'S2', 'Sonata', 'sonata', 'T6', 'T6', 'T90', 'T90', 'Tank 300', 'Tank 300', 'Tank 300', 'Tank 300', 'Tank 300', 'Tank 500', 'Tank 500', 'Terios', 'TERIOS', 'Terracan', 'Terracan', 'Test', 'Test', 'Test', 'Test', 'Test', 'test', 'test', 'test', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 4 Pro', 'Tiggo 7 Pro', 'Tiggo 7 Pro', 'Tiggo 7 Pro', 'Tiggo 7 Pro', 'Tiggo 7 Pro Max', 'Tiggo 7 Pro Max', 'Tiggo 7 Pro Max', 'Tiggo 8 Pro Max', 'Tiggo 8 Pro Max', 'Tiggo 8 Pro Max', 'Trajet', 'Trajet', 'VV@', 'VX', 'waja', 'X35', 'X35', 'X7', 'X7', 'X70S', 'X70S', 'YZF-R1M', 'YZF-R1M', 'Z7', 'Z7', 'ZS', 'ZS')
+
+    query = f"SELECT * FROM dbo.Model WHERE TRIM(Name) NOT IN {invalid_models} AND StatusID=1 ORDER BY ModelID"
     df = pd.read_sql_query(query, source_db)
     log.info(f'Extracted {len(df)} rows from dbo.Model')
     return df
@@ -72,7 +74,7 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_makes(target_db), on='OldMakeID', how='left')
     df.drop(columns="OldMakeID", inplace=True)
 
-    print(df)
+    df.dropna(subset='MakeID', inplace=True)
 
     log.info('Transformation complete')
     return df
@@ -81,7 +83,6 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
 def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'RecommendedLiters':DECIMAL(18,2), 'ImagePath':NVARCHAR(None)}
-    max_id = df['OldModelID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -110,15 +111,15 @@ def load(df: pd.DataFrame, engine: Engine):
 def main():
     source = source_db_conn()
     target = target_db_conn()
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        df = transform(df, target)
-        # print(df)
-        # return
-        load(df, target)
+
+    df = extract(source)
+    if df.empty:
+        log.info('No data to load.')
         return
+    df = transform(df, target)
+    # print(df)
+    # return
+    load(df, target)
+
 if __name__ == '__main__':
     main()

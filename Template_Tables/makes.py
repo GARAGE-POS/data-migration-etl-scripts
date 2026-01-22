@@ -34,7 +34,7 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
     """Extract data."""
 
-    query = f"SELECT * FROM dbo.Make ORDER BY MakeID"
+    query = f"SELECT * FROM dbo.Make WHERE StatusID = 1 ORDER BY MakeID"
     df = pd.read_sql_query(query, source_db)
     log.info(f'Extracted {len(df)} rows from dbo.Make')
     return df
@@ -99,14 +99,14 @@ def load(df: pd.DataFrame, engine: Engine):
 def main():
     source = source_db_conn()
     target = target_db_conn()
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No data to load.')
-            return
-        df = transform(df)
-        # return
-        load(df, target)
+
+    df = extract(source, target)
+    if df.empty:
+        log.info('No data to load.')
         return
+    df = transform(df)
+    # return
+    load(df, target)
+    
 if __name__ == '__main__':
     main()
