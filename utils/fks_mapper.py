@@ -60,14 +60,14 @@ def get_orders(engine: Engine, old_order_ids: pd.Series | None = None) -> pd.Dat
 def get_cars(engine: Engine, old_car_ids: pd.Series | None = None) -> pd.DataFrame:
     if old_car_ids is not None:
         car_ids = (0,0) + tuple(old_car_ids.dropna().values.tolist())
-        return pd.read_sql(f"SELECT CarID, OldCarID FROM app.Cars WHERE OldCarID IN {car_ids}", engine)
+        return pd.read_sql(f"SELECT CarID, OldCarID FROM app.Cars WHERE OldCarID IN {car_ids} AND OldCarID IS NOT NULL", engine)
     return pd.read_sql("SELECT CarID, OldCarID FROM app.Cars WHERE OldCarID IS NOT NULL", engine)
 
 def get_order_details(engine: Engine, old_order_detail_ids: pd.Series | None = None) -> pd.DataFrame:
     if old_order_detail_ids is not None:
         order_detail_ids = (0,0) + tuple(old_order_detail_ids.dropna().values.tolist())
-        return pd.read_sql(f"SELECT OrderDetailID, OldOrderDetailID FROM app.OrderDetails WHERE OldOrderDetailID IN {order_detail_ids}", engine)
-    return pd.read_sql("SELECT OrderDetailID, OldOrderDetailID FROM app.OrderDetails WHERE OldOrderDetailID IS NOT NULL", engine)
+        return pd.read_sql(f"SELECT LineItemID AS OrderDetailID, OldOrderDetailID FROM app.OrderLineItems WHERE OldOrderDetailID IN {order_detail_ids} AND OldOrderDetailID IS NOT NULL", engine)
+    return pd.read_sql("SELECT LineItemID AS OrderDetailID, OldOrderDetailID FROM app.OrderLineItems WHERE OldOrderDetailID IS NOT NULL", engine)
 
 def get_items(engine: Engine, old_item_ids : pd.Series) -> pd.DataFrame:
     item_ids = tuple(old_item_ids.dropna().values.tolist()) + (0,0)
@@ -94,6 +94,14 @@ def get_categories(engine: Engine, old_cat_ids : pd.Series) -> pd.DataFrame:
     """)
     return pd.read_sql(query, engine)
 
+
+def get_permissions(engine: Engine, roles: str | list[str] | None = None) -> pd.DataFrame:
+    if roles is None:
+        return pd.read_sql("SELECT * FROM app.RolesAndPermissions", engine)
+    if isinstance(roles, str):
+        return pd.read_sql(f"SELECT * FROM app.RolesAndPermissions WHERE Role={roles}", engine)
+    return pd.read_sql(f"SELECT * FROM app.RolesAndPermissions WHERE Role IN {'(' + str(roles)[1:-1] + ')'}", engine)
+
 def get_cities(engine: Engine) -> pd.DataFrame:
     return pd.read_sql("SELECT CountryID, CityID, OldCityID FROM app.SyncCities", engine)
 
@@ -107,7 +115,7 @@ def get_warehouses(engine: Engine) -> pd.DataFrame:
     return pd.read_sql("SELECT WarehouseID, OldStoreID FROM app.Warehouses WHERE OldStoreID IS NOT NULL", engine)
 
 def get_stock_transfers(engine: Engine) -> pd.DataFrame:
-    return pd.read_sql(f"SELECT TransferID AS StockTransferID, OldStockIssueID FROM app.StockTransfers", engine)
+    return pd.read_sql(f"SELECT TransferID AS StockTransferID, OldStockIssueID FROM app.StockTransfers WHERE OldStockIssueID IS NOT NULL", engine)
 
 
 
