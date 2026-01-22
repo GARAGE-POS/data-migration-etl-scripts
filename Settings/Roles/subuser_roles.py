@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import fill_useraccounts, get_logger
 from utils.fks_mapper import get_permissions
 
 log = get_logger('AspNetUserRoles')
@@ -38,9 +38,7 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
     account_id = int(account_id['AccountID']) # type: ignore
 
-
-
-    df = pd.read_sql(f"SELECT Id AS SubUserID, Designation AS RoleName, AccountID FROM app.AspNetUsers WHERE AccountID={account_id} AND UserType='User'", engine)
+    df = pd.read_sql(f"SELECT Id AS UserID, Designation AS RoleName FROM app.AspNetUsers WHERE Id IN (SELECT UserID FROM app.UserAccounts WHERE AccountID={account_id})", engine)
 
     roles = pd.read_sql(f'SELECT ID AS RoleID, Name AS RoleName FROM app.AspNetRoles WHERE AccountID={account_id}', engine)
 
@@ -50,8 +48,10 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     if missing_roles.sum():
         log.warning(f"Missing RoleIDs for Roles: {df[missing_roles]['RoleName'].drop_duplicates().values}")
         raise ValueError('Check Designation in AspNetUsers or RoleName in AspNetRoles.')
-    
+
     df.drop(columns='RoleName', inplace=True)
+
+    df['AccountID'] = account_id
 
     log.info(f'Extracted {len(df)} rows from asp.AspNetUsers')
     return df

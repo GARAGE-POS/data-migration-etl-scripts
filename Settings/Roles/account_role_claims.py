@@ -43,8 +43,15 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
             conn.execute(text('''
                 MERGE app.AspNetRoles o
                 USING (
-                    VALUES  (:account,	'SuperAdmin', UPPER('SuperAdmin'), 1),
-                            (:account,	'BranchManager', UPPER('BranchManager'), 0)
+                    VALUES  (:account,	'AccountsManager', UPPER('AccountsManager'), 1),
+                            (:account,	'AccountManager', UPPER('AccountManager'), 1),
+                            (:account,	'AccountOwner', UPPER('AccountOwner'), 1),
+                            (:account,	'BranchManager', UPPER('BranchManager'), 1),
+                            (:account,	'StockManager', UPPER('StockManager'), 1),
+                            (:account,	'GeneralManager', UPPER('GeneralManager'), 1),
+                            (:account,	'Cashier', UPPER('Cashier'), 1),
+                            (:account,	'Technician', UPPER('Technician'), 1),
+                            (:account,	'Assistant', UPPER('Assistant'), 1)
                 ) n (AccountID, Name, NormalizedName, IsSystemRole)
                 ON o.AccountID = n.AccountID AND o.Name = n.Name
                 WHEN NOT MATCHED THEN
@@ -56,9 +63,11 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
         log.error(f'Failed to load app.AspNetRoles: {e}')
         raise
 
-    df = pd.read_sql(f'SELECT AccountID, ID AS RoleID FROM app.AspNetRoles WHERE AccountID={account_id}', engine)
-    df = pd.merge(df, get_permissions(engine, ['SuperAdmin', 'BranchManager']), how='cross')
+    df = pd.read_sql(f'SELECT AccountID, ID AS RoleID, Name AS Role  FROM app.AspNetRoles WHERE AccountID={account_id}', engine)
+
+    df = pd.merge(df, get_permissions(engine),on='Role', how='left')
     
+    df.drop(columns='Role', inplace=True)
     log.info(f'Extracted {len(df)} rows from asp.AspNetRoles')
     return df
 
