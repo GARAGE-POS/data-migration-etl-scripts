@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
+import json
 from utils.tools import get_logger
 from utils.custom_err import IncrementalDependencyError
 from utils.fks_mapper import get_custom
@@ -55,6 +56,11 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
 
     query = f"SELECT * FROM dbo.Items WHERE SubCatID IN {subcat_ids}"
     df = pd.read_sql_query(query, engine)
+
+    subcat_df = pd.read_sql(f'SELECT SubCategoryID AS SubCatID, TRIM(Name) AS SubCatName FROM dbo.SubCategory WHERE SubCategoryID IN {subcat_ids}', engine)
+
+    df = pd.merge(df, subcat_df, on='SubCatID', how='left')
+
     log.info(f'Extracted {len(df)} rows from dbo.Items')
     return df
 
@@ -62,7 +68,7 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
 def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Clean and transform Items data."""
     # Keep only necessary columns and rename
-    df = df[['ItemID','SubCatID','Name','NameOnReceipt','Description','ItemImage','Barcode','SKU','DisplayOrder','Price', 'Cost','ItemType','IsInventoryItem','IsOpenItem','MinOpenPrice','LastUpdatedDate','StatusID','UnitID']]
+    df = df[['ItemID','SubCatID','SubCatName', 'Name','NameOnReceipt','Description','ItemImage','Barcode','SKU','DisplayOrder','Price', 'Cost','ItemType','IsInventoryItem','IsOpenItem','MinOpenPrice','LastUpdatedDate','StatusID','UnitID']]
 
     df = df.rename(columns={
         'NameOnReceipt':'NameAr',
@@ -86,6 +92,8 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     df['CreatedAt'] = df['UpdatedAt']
     df['IsInclusiveVAT'] = 0
     df['StatusID'] = df['StatusID'].fillna(1)
+    df['PropertiesJSON'] = df['SubCatName'].map(lambda x: json.dumps({'SubCategory': x}, ensure_ascii=False))
+
 
     for col in df.select_dtypes(include='object').columns:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
@@ -109,9 +117,10 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 
     
     # ItemTypeID MAP
-    item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
-    item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
-    df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
+    # item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
+    # item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
+    # df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
+    df['ItemTypeID'] = 1
 
     # CategoryID Matching    
     cat_ids = pd.read_sql(f"SELECT CategoryID, SubCategoryID FROM dbo.SubCategory", source_db)
@@ -142,8 +151,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     sync_table = df[['OldItemID', 'CategoryID','Name']].copy()
 
     df.sort_values(by=['CategoryID', 'StatusID', 'Price'], ascending=[True, True, False], inplace=True)
-
-    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'OldItemID'], inplace=True)
+    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'OldItemID', 'SubCatName'], inplace=True)
 
     df.drop_duplicates(subset=['CategoryID','Name'], inplace=True)
     
@@ -154,7 +162,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, sync_t: pd.DataFrame, engine: Engine):
 
-    dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'Description':NVARCHAR(None), 'DescriptionAr':NVARCHAR(None), 'ImagePath':NVARCHAR(None)}
+    dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
     try:
         with engine.begin() as conn:  # Transaction-safe
