@@ -5,8 +5,8 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger,  clean_contact
-from utils.fks_mapper import get_cities, get_accounts
+from utils.tools import fill_useraccounts, get_logger,  clean_contact
+from utils.fks_mapper import get_cities, get_accounts, get_users
 
 
 warnings.filterwarnings('ignore')
@@ -74,16 +74,17 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['LockoutEnabled'] = 0
     df['AccessFailedCount'] = 0
 
-
-    df['Designation'] = 'AccountManager'
-
-
     df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
     df['NormalizedUserName'] = df['NormalizedEmail']
 
     df['OldCityID'] = pd.to_numeric(df['OldCityID'], errors='coerce')
 
+    df['Designation'] = 'AccountOwner'
+    df['PasswordHash'] = os.getenv('NU_PASSWORD')
+    df['PasscodeHash'] = os.getenv('NU_PASSWORD')
+    df['SecurityStamp'] = os.getenv('SEC_STAMP')
 
+    # FOREIN KEYS MAPPING
     df = pd.merge(df, get_cities(engine), on='OldCityID', how='left')
     df = pd.merge(df, get_accounts(engine, df['OldUserID']), on='OldUserID', how='left')
 
@@ -96,7 +97,9 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 def load(df: pd.DataFrame, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
-    
+    account_id = int(df.loc[0,'AccountID']) # type: ignore
+    df.drop(columns='AccountID', inplace=True)
+
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -115,6 +118,12 @@ def load(df: pd.DataFrame, engine: Engine):
 
             df.to_sql('AspNetUsers', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
             log.info(f'dbo.SubUsers loaded successfully')
+
+            log.info('app.UserAccounts Loading...')
+            user_ids = get_users(conn, df['OldID'])['Id'].values.tolist() # type: ignore
+
+            fill_useraccounts(conn, account_id, user_ids) # type: ignore
+            log.info(f'app.UserAccounts loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.Users: {e}')
