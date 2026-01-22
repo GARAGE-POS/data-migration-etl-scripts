@@ -39,7 +39,7 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     package_ids = pd.read_sql(f'SELECT PackageID FROM dbo.Packages WHERE UserID={user_id}', engine)
     package_ids = (0,0) + tuple(package_ids['PackageID'].values.tolist())
 
-    query = f"SELECT * FROM dbo.PackageDetails WHERE PackageID={package_ids} ORDER BY PackageDetailID "
+    query = f"SELECT * FROM dbo.PackageDetails WHERE PackageID IN {package_ids} ORDER BY PackageDetailID "
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.PackageDetails')
     return df
