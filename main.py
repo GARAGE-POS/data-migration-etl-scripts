@@ -9,6 +9,7 @@ from Template_Tables.sync_payment_modes import main as payment_modes
 from Template_Tables.sync_services import main as services
 from Main_Modules.Accounts.accounts import main as accounts
 from Main_Modules.Locations.locations import main as locations
+from Main_Modules.Locations.location_settings import main as location_settings
 from Main_Modules.Bays.bays import main as bays
 from Main_Modules.AspNetUsers.subusers import main as users
 from Main_Modules.AspNetUsers.customers import main as customers
@@ -24,6 +25,7 @@ from Main_Modules.Cars.car_locations import main as car_locations
 from Orders_Payments.Orders.orders import main as orders
 from Orders_Payments.Orders.order_payments import main as order_payments
 from Orders_Payments.Orders.order_line_items import main as order_line_items
+from Orders_Payments.Orders.order_packages import main as order_packages
 from Orders_Payments.Payments.account_payment import main as account_payment
 from Invertory.Warehouses.warehouses import main as warehouses
 from Invertory.Suppliers.suppliers import main as suppliers
@@ -35,23 +37,61 @@ from Invertory.Stocks.stock_transfer_details import main as stock_transfer_detai
 from Invertory.Reconciliations.reconciliations import main as reconciliations
 from Settings.Subscriptions.subscriptions import main as subscriptions
 from Settings.Roles.roles import main as roles
+from Settings.Roles.permissions import main as permissions
+from Settings.Roles.account_role_claims import main as account_role_claims
+from Settings.Roles.subuser_roles import main as subuser_roles
 
 
 
 def main():
 
-    # accounts()
-    # locations()
-    # categories()
-    # items()
-    # bays()
-    # customers()
-    # cars()
-    # orders()
-    # order_line_items()
-    roles()
-    # cars()
-    # categories()
+    user_id = 2351
+    load_db = 1
+
+    #template tables
+    # makes()
+    # models()
+    # app_sources(load_db==1)
+    # amenities(load_db==1)
+    # cities(load_db==1)
+    # landmarks(load_db==1)
+    # payment_modes(load_db==1)
+    # units(load_db==1)
+    # services(load_db==1)
+
+
+
+
+
+
+    # accounts(user_id, load_db==1)
+    # account_payment(user_id, load_db==1)
+    # locations(user_id, load_db==1)
+    # location_settings(user_id, load_db==1)
+
+
+
+
+    users(user_id, load_db==1)
+    customers(user_id, load_db==1)
+    customer_locations(user_id, load_db==1)
+    bays(user_id, load_db==1)
+    
+    cars(user_id, load_db==1)
+    car_locations(user_id, load_db==1)
+    categories(user_id, load_db==1)
+    items(user_id, load_db==1)
+    location_items(user_id, load_db==1)
+    packages(user_id, load_db==1)
+    package_details(user_id, load_db==1)
+    location_packages(user_id, load_db==1)
+    orders(user_id, load_db==1)
+    order_payments(user_id, load_db==1)
+    order_line_items(user_id, load_db==1)
+    account_role_claims(user_id, load_db==1)
+    subuser_roles(user_id, load_db==1)
+
+
 
 if __name__ == '__main__':
     main()
