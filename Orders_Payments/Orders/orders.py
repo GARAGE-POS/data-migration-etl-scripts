@@ -47,8 +47,9 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     df = pd.read_sql_query(query, engine)
 
     order_ids = tuple(df['OrderID'].values.tolist()) + (0,0)
-    order_checkout = pd.read_sql(f'SELECT OrderID, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', engine)
-    order_checkout = order_checkout.groupby('OrderID', as_index=False).agg({k:('sum' if k!='DiscountPercent' else 'max') for k in order_checkout.columns})
+    order_checkout = pd.read_sql(f'SELECT OrderID, OrderStatus, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', engine)
+    order_checkout = order_checkout.groupby('OrderID', as_index=False).agg({k:('sum' if k not in ['DiscountPercent','OrderStatus'] else 'max') for k in order_checkout.columns})
+
 
     order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN {order_ids}', engine)
     order_details = order_details.groupby('OrderID', as_index=False).sum()
@@ -71,6 +72,7 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
         'BayID':'OldBayID',
         'OrderTakerID':'OldID',
         'StatusID':'LastServiceStatusID',
+        'OrderStatus':'LastOrderPaymentStatusID',
         'LastUpdateDT':'UpdatedAt',
         'CreatedOn':'CreatedAt',
         'AmountTotal':'Subtotal',
@@ -100,7 +102,8 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     df['GrandTotal'] = df['GrandTotal'].fillna(0)
     df['AmountPaidTotal'] = df['AmountPaidTotal'].fillna(0)
     df['RefundAmountTotal'] = df['RefundAmountTotal'].fillna(0)
-    df['LastOrderPaymentStatusID'] = 1
+    df['LastOrderPaymentStatusID'] = df[['LastOrderPaymentStatusID', 'RefundAmountTotal']].apply(lambda row: 305 if row['LastOrderPaymentStatusID']==103 and row['RefundAmountTotal'] > 0 else 303 if row['LastOrderPaymentStatusID']==103 else  306 if row['LastOrderPaymentStatusID'] == 106 else row['LastOrderPaymentStatusID'], axis=1)
+    df['LastOrderPaymentStatusID'] = df['LastOrderPaymentStatusID'].fillna(308)
     df['OldBayID'] = pd.to_numeric(df['OldBayID'], errors='coerce')
     df['OrderType'] = df['OldCarID'].map(lambda x: 0 if isinstance(x, int) else 1)
 
@@ -109,6 +112,12 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     df['AmountDueTotal'] = df['GrandTotal'] - df['AmountPaidTotal']
     df.loc[df['OrderDiscountTotal']== 0, 'OrderDiscountTotal'] = df[['OrderDiscountPercent','Subtotal']].apply(lambda row: (row['OrderDiscountPercent'] * row['Subtotal'])/100, axis=1) 
     df.loc[df['OrderDiscountPercent']== 0, 'OrderDiscountPercent'] = df[['OrderDiscountTotal','Subtotal']].apply(lambda row: 0 if row['Subtotal']==0 else row['OrderDiscountTotal'] / row['Subtotal'], axis=1) 
+
+
+    # Fix OrderNo
+    df.sort_values(by='CreatedAt', inplace=True)
+    df['OrderNo'] = range(1,len(df)+1)
+
 
     # Foreign Keys Mapping
     df = pd.merge(df, get_locations(target), on='OldLocationID', how='left')

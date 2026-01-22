@@ -39,21 +39,25 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
  
     order_query = f"""
-        SELECT OrderID
-        FROM dbo.Orders
-        WHERE LocationID IN (
-            SELECT LocationID
-            FROM dbo.Locations
-            WHERE UserID={user_id}
+        SELECT OrderDetailID
+        FROM dbo.OrderDetail
+        WHERE OrderID IN (
+            SELECT OrderID
+            FROM dbo.Orders
+            WHERE LocationID IN (
+                SELECT LocationID
+                FROM dbo.Locations
+                WHERE UserID={user_id}
+            )
         )
     """
 
-    order_ids = pd.read_sql(order_query, engine)
-    order_ids = (0,0) + tuple(order_ids['OrderID'].values.tolist())
+    order_detail_ids = pd.read_sql(order_query, engine)
+    order_detail_ids = (0,0) + tuple(order_detail_ids['OrderDetailID'].values.tolist())
 
-    query = f"SELECT  * FROM dbo.OrderPackageDetail WHERE OrderID IN {order_ids} ORDER BY OrderPkgDetailID"
+    query = f"SELECT  * FROM dbo.OrderDetailPackage WHERE OrderDetailID IN {order_detail_ids} ORDER BY OrderPkgDetailID"
     df = pd.read_sql_query(query, engine)
-    log.info(f'Extracted {len(df)} rows from dbo.OrderPackageDetail')
+    log.info(f'Extracted {len(df)} rows from dbo.OrderDetailPackage')
     return df
 
 # -------------------- Transform --------------------
@@ -135,7 +139,6 @@ def main(user_id:int, if_load:bool=True):
     if if_load:
         load(df, target)
         
-        load(df, target)
 
 # if __name__ == '__main__':
 #     main()
