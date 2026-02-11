@@ -38,7 +38,7 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
     account_id = int(account_id['AccountID']) # type: ignore
 
-    df = pd.read_sql(f"SELECT Id AS UserID, Designation AS RoleName FROM app.AspNetUsers WHERE Id IN (SELECT UserID FROM app.UserAccounts WHERE AccountID={account_id})", engine)
+    df = pd.read_sql(f"SELECT Id AS UserID, Designation AS RoleName FROM app.AspNetUsers WHERE Id IN (SELECT UserID FROM app.UserAccounts WHERE AccountID={account_id} AND UserID <> 1)", engine)
 
     roles = pd.read_sql(f'SELECT ID AS RoleID, Name AS RoleName FROM app.AspNetRoles WHERE AccountID={account_id}', engine)
 
