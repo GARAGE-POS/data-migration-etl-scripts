@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_custom, get_suppliers, get_warehouses
 from utils.custom_err import IncrementalDependencyError
 
@@ -33,18 +33,13 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.ETLcdc WHERE TableName=:table_name"),
-            {"table_name": 'dbo.inv_Bill'}
-        ).scalar()
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.inv_Bill: {max_id}')
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT top 1000 * FROM dbo.inv_Bill WHERE BillID > {max_id} ORDER BY BillID"
-    df = pd.read_sql_query(query, source_db)
+    last_id = get_last_ingested(user_id, 'dbo.inv_Bill')
+
+    query = f"SELECT * FROM dbo.inv_Bill WHERE LocationID IN (SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}) AND BillID > {last_id} ORDER BY BillID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.inv_Bill')
     return df
 
@@ -73,19 +68,20 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
         else:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
+    df["OldPurchaseOrderID"] = pd.to_numeric(df["OldPurchaseOrderID"], errors='coerce')
 
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
 
     # Temporary Filling
-    df['OldPurchaseOrderID'] = df['OldPurchaseOrderID'].fillna(4)
-    df['OldSupplierID'] = df['OldSupplierID'].fillna(4)
-    df['AuditedByUserID'] = 0
+    df['OldSupplierID'] = df['OldSupplierID'].fillna(df['OldSupplierID'].min())
     df['Attachments'] = df['Attachments'].fillna('')
+    df['BillNumber'] = df['OldBillID'].map(lambda x: f'BN-{x}')
+    df['ReferenceNumber'] = df['OldBillID'].map(lambda x: f'REF-{x}')
 
-    df = pd.merge(df, get_custom(engine, ['PurchaseOrderID', 'ReferenceNumber', 'AccountPaymentModeID', 'TermsAndConditions', 'PaymentTerms', 'OldPurchaseOrderID'], 'app.PurchaseOrders'), on='OldPurchaseOrderID', how='left')
-    missing_purchase_orders = df['PurchaseOrderID'].isna().sum()
+    df = pd.merge(df, get_custom(engine, ['PurchaseOrderID', 'AccountPaymentModeID', 'TermsAndConditions', 'PaymentTerms', 'OldPurchaseOrderID'], 'app.PurchaseOrders', 'OldPurchaseOrderID'), on='OldPurchaseOrderID', how='left')
+    missing_purchase_orders = df.dropna(subset='OldPurchaseOrderID')['PurchaseOrderID'].isna().sum()
     if missing_purchase_orders:
         log.warning(f'Missing PurchaseOrderIDs: {missing_purchase_orders}')
         raise IncrementalDependencyError('Update PurchaseOrders Table.')  
@@ -101,10 +97,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     if missing_whs:
         log.warning(f'Missing WarehouseIDs: {missing_whs}')
         raise IncrementalDependencyError('Update Warehouses Table.')
-    
-    # // TO DO: AuditedByUserID
 
-
+    df['AccountPaymentModeID'] = df['AccountPaymentModeID'].fillna(df['AccountPaymentModeID'].min())
 
     df.drop(columns=[
         'OldPurchaseOrderID', 'OldSupplierID', 'OldStoreID', 'CreatedBy', 'LastUpdatedBy', 'Date', 'LocationID', 'PaymentStatus'
@@ -115,11 +109,10 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}    
     
-    max_id = df['OldBillID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -137,40 +130,33 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldBillID column.")
 
-            df.to_sql('PurchaseBills', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.inv_Bill loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('PurchaseBills', con=engine, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.inv_Bill', int(df.iloc[5000*i:5000*(i+1)]['OldBillID'].max()))
+            log.info(f'Batch {i+1} inserted')
+            i+=1
+        log.info(f'dbo.inv_Bill loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[ETLcdc] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.inv_Bill', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.inv_Bill loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.inv_Bill: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
-    # return
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            return
-        
-        # return
-        df = transform(df, target)
-        # print(df)
-        # return
-        load(df, target)
 
-if __name__ == '__main__':
-    main()
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return 
+
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
+        load(df, user_id, target)
+
+# if __name__ == '__main__':
+#     main()
