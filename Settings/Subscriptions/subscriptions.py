@@ -33,92 +33,79 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(user_id: int, source_db: Engine) -> pd.DataFrame:
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
+    
+    df = pd.DataFrame()
+    
+    account = pd.read_sql(f'SELECT AccountID, TRIM(CompanyCode) AS CompanyCode FROM app.Accounts WHERE OldUserID={user_id}', engine)
+    df['CompanyCode'] = account['CompanyCode']
+
+    df = pd.merge(df, pd.read_csv('Settings/Subscriptions/CRMs.csv'), on='CompanyCode', how='left')
+    df = pd.merge(df, pd.read_csv('Settings/Subscriptions/Subs.csv'), on='CRMID', how='left')
+    df = pd.merge(df, pd.read_csv('Settings/Subscriptions/Deals.csv'), on='DealID', how='left')
+    df.dropna(subset='SubscriptionName', inplace=True)
+
+    
+    df['AccountID'] = int(account['AccountID']) # type: ignore
 
 
-    query = f"SELECT * FROM dbo.UserPackageDetails WHERE UserID={user_id} ORDER BY UserPackageDetailID"
-    df = pd.read_sql_query(query, source_db)
-    log.info(f'Extracted {len(df)} rows from dbo.UserPackageDetails')
-    return df
+    df['StartDate'] = pd.to_datetime(df['StartDate'], errors='coerce')
+    df['InvoiceDate'] = pd.to_datetime(df['InvoiceDate'], errors='coerce')
+    df.loc[df['StartDate'].isna(), 'StartDate'] = df['InvoiceDate']
 
-# -------------------- Transform --------------------
-def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
-    """Clean and transform UserPackageDetails data."""
-    # Keep only necessary columns and rename
-    df.rename(columns={
-        "UserPackageDetailID":'OldUserPackageDetailID',
-        'UserID':'OldUserID',
-        'PackageInfoID':'SubscriptionType',
-        "CreatedDate": "CreatedAt",
-        'LastUpdatedDate':'UpdatedAt'
-        }, inplace=True)
+    df['StartDate'] = df['StartDate'].min()
+    df['InvoiceDate'] = df['InvoiceDate'].max()
+    if len(df) == 1:
+        df['ExpiryDate'] = df['StartDate'] + pd.DateOffset(years=1)
+    elif len(df) > 1:
+        df['ExpiryDate'] = df['InvoiceDate'] + pd.DateOffset(years=1)
+        for _, row in df.iterrows():
+            if 'monthly' in row['SubscriptionName'].lower():
+                raise ValueError('Monthly Subscription exists.')
 
-
-    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
-    df.loc[df['ExpiryDate'].isna(), 'ExpiryDate'] = df['CreatedAt'] + pd.DateOffset(years=1)
-    df['SubscriptionType'] = df['SubscriptionType'].fillna(1)
-    df['StatusID'] = df['StatusID'].fillna(1)
-
-    df['SubscriptionName'] = df['SubscriptionType'].map({1:'FREE', 2:'PROF'})
-
-    df['StartDate'] = df['CreatedAt']
-    df['PaymentTerm'] = 0
-    df['NumberOfTerminals'] = 0
+    df['CreatedAt'] = df['UpdatedAt'] = datetime.now()
+    df['Terminals'] = df['Terminals'].sum()
 
 
-    df = pd.merge(df, get_accounts(engine), on='OldUserID', how='left')
-    missing_accs = df['AccountID'].isna().sum()
-    if missing_accs:
-        log.warning(f'Missing AccountIDs: {missing_accs}')
-        raise IncrementalDependencyError('Update Accounts Table.')
+    df['PaymentTerm'] = df['SubscriptionName'].map(lambda x: 30 if 'monthly' in x.lower() else 365)
+    df['StatusID'] = 1
+    df['SubscriptionType'] = 1
+    df['CRMID'] = df['CRMID'].astype(int).astype(str)
 
-    df.drop(columns='OldUserID', inplace=True)
+    df.drop(columns={'CompanyCode', 'InvoiceDate', 'DealID', 'AddOns', 'InvoiceNumber'}, inplace=True)
+    df.rename(columns={'Terminals':'NumberOfTerminals'}, inplace=True)
+
+    if df.empty:
+        return pd.DataFrame()
+
+    return df.iloc[[0]]
 
 
-    log.info(f'Transformation complete, output: {len(df)}')
-    return df
 
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
-    max_id = df['OldUserPackageDetailID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
-            conn.execute(text("""
-                IF NOT EXISTS (
-                    SELECT 1 FROM sys.columns
-                    WHERE Name = 'OldUserPackageDetailID'
-                    AND Object_ID = Object_ID('app.Subscriptions')
-                )
-                BEGIN
-                    ALTER TABLE app.Subscriptions
-                    ADD OldUserPackageDetailID BIGINT NULL;
-                END
-            """))
-            log.info("Verified/Added OldUserPackageDetailID column.")
-
             df.to_sql('Subscriptions', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.UserPackageDetails loaded successfully')
+            log.info(f'app.Subscriptions loaded successfully')
 
     except Exception as e:
-        log.error(f'Failed to load dbo.UserPackageDetails: {e}')
+        log.error(f'Failed to load app.Subscriptions: {e}')
         raise
 
 # -------------------- Main --------------------
 def main(user_id:int, if_load:bool=True):
-    source = source_db_conn()
     target = target_db_conn()
 
-    df = extract(user_id, source)
+    df = extract(user_id, target)
     if df.empty:
         log.info('No data to load.')
         return 
 
-    df = transform(df, target)
     print(df)
 
     if if_load:
