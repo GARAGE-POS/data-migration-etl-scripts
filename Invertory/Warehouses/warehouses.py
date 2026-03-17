@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.custom_err import IncrementalDependencyError
-from utils.tools import get_logger
+from utils.tools import clean_contact, get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_locations
 
 warnings.filterwarnings('ignore')
@@ -34,19 +34,13 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(source_db: Engine, target_db: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
-    with target_db.begin() as conn:
-        max_id = conn.execute(
-            text("SELECT ISNULL(MaxIndex,0) FROM app.EtlCDC WHERE TableName=:table_name"),
-            {"table_name": 'dbo.Stores'}
-        ).scalar()
-    
-    max_id = max_id if not max_id is None else 0
-    log.info(f'Current CDC for dbo.Stores: {max_id}')
+def extract(user_id: int, engine: Engine) -> pd.DataFrame:
+    """Extract data based on UserID."""
 
-    query = f"SELECT TOP 1000 * FROM dbo.Stores WHERE StoreID > {max_id} ORDER BY StoreID"
-    df = pd.read_sql_query(query, source_db)
+    last_id = get_last_ingested(user_id, 'dbo.Stores')
+
+    query = f"SELECT * FROM dbo.Stores WHERE UserID={user_id} AND StoreID > {last_id} ORDER BY StoreID"
+    df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Stores')
     return df
 
@@ -70,7 +64,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
             else: 
                 df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
 
-
+    df['Contact'] = df['Contact'].map(clean_contact)
+    
     # Filling Null Values
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
@@ -78,11 +73,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     df["IsMainStore"] = df['Type'].apply(lambda x: 1 if x == 'Main Store' else 0)
 
-    # missing_loc = df['OldLocationID'].isna()
-    # log.info(f'Missing Locations: {missing_loc}')
-    # df = df[~df['OldLocationID'].isna()]
-
-    df['OldLocationID'] = df['OldLocationID'].fillna(4)
+    df['OldLocationID'] = df['OldLocationID'].fillna(df['OldLocationID'].min())
 
     df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
     missing_loc = df['LocationID'].isna().sum()
@@ -98,12 +89,10 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldStoreID'].max()
-
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -121,37 +110,28 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldStoreID column.")
 
             df.to_sql('Warehouses', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.Stores', int(df['OldStoreID'].max()))
             log.info(f'dbo.Stores loaded successfully')
 
-            conn.execute(
-                text("""
-                    MERGE app.[EtlCDC] AS target
-                    USING (SELECT :table_name AS [TableName], :max_index AS [MaxIndex]) AS source
-                    ON target.[TableName] = source.[TableName]
-                    WHEN MATCHED THEN UPDATE SET target.[MaxIndex] = source.[MaxIndex]
-                    WHEN NOT MATCHED THEN INSERT ([TableName],[MaxIndex]) VALUES (source.[TableName],source.[MaxIndex]);
-                """),
-                {"table_name": f'dbo.Stores', "max_index": int(max_id)}
-            )
-            log.info(f'dbo.Stores loaded successfully, CDC updated to {max_id}')
     except Exception as e:
         log.error(f'Failed to load dbo.Stores: {e}')
         raise
 
 # -------------------- Main --------------------
-def main():
+def main(user_id:int, if_load:bool=True):
     source = source_db_conn()
     target = target_db_conn()
 
-    while True:
-        df = extract(source, target)
-        if df.empty:
-            log.info('No new data to load.')
-            break
-        df = transform(df, target)
-        # print(df.head(20))
-        load(df, target)
-        # return
+    df = extract(user_id, source)
+    if df.empty:
+        log.info('No data to load.')
+        return 
 
-if __name__ == '__main__':
-    main()
+    df = transform(df, target)
+    print(df)
+
+    if if_load:
+        load(df, user_id, target)
+
+# if __name__ == '__main__':
+#     main()
