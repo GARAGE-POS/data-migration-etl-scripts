@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_locations, get_customers
 from utils.custom_err import IncrementalDependencyError
 
@@ -38,12 +38,13 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    customer_ids = pd.read_sql(f'SELECT CustomerID FROM dbo.Customers WHERE UserID={user_id}', engine)
-    customer_ids = (0,0) + tuple(customer_ids['CustomerID'].values.tolist())
-    
+    last_id = get_last_ingested(user_id, 'dbo.CustomerLocation_Junc')
 
-    query = f"SELECT * FROM dbo.CustomerLocation_Junc WHERE CustomerID IN {customer_ids} AND UserID={user_id} ORDER BY CustomerLocationID"
+    
+    query = f"SELECT * FROM dbo.CustomerLocation_Junc WHERE LocationID IN (SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}) AND CustomerLocationID > {last_id} ORDER BY CustomerLocationID"
     df = pd.read_sql_query(query, engine)
+
+
     log.info(f'Extracted {len(df)} rows from dbo.CustomerLocation_Junc')
     return df
 
@@ -71,9 +72,10 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     if missing_loc:
         raise IncrementalDependencyError(f'Missing LocationIDs: {missing_loc}. Update Locations Table.')
     
-    df = pd.merge(df, get_customers(engine, df['OldID']), on='OldID', how='left')
+    df = pd.merge(df, get_customers(engine), on='OldID', how='left')
     missing_cust = df['CustomerID'].isna().sum()
     if missing_cust:
+        print(df[df['CustomerID'].isna()])
         log.warning(f'Missing CustomerIDs: {missing_cust}.')
         raise IncrementalDependencyError(f'Update Customers in AspNetUsers Table.')
 
@@ -88,8 +90,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
-    
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
+
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -106,7 +108,12 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldCustomerLocationID column.")
 
-            df.to_sql('CustomerLocations', con=conn, schema='app', if_exists='append', index=False) # type: ignore
+            i = 0
+            while i < len(df)/5000:
+                df.iloc[5000*i:5000*(i+1)].to_sql('CustomerLocations', con=conn, schema='app', if_exists='append', index=False) # type: ignore
+                update_last_ingested(user_id, 'dbo.CustomerLocation_Junc', int(df.iloc[5000*i:5000*(i+1)]['OldCustomerLocationID'].max()))    
+                log.info(f"Batch {i+1} inserted.")
+                i+=1
             log.info(f'dbo.CustomerLocation_Junc loaded successfully')
 
     except Exception as e:
@@ -128,7 +135,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':

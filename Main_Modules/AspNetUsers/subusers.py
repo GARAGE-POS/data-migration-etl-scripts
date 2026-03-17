@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import fill_useraccounts, get_logger,  clean_contact
+from utils.tools import fill_useraccounts, get_last_ingested, get_logger,  clean_contact, update_last_ingested
 from utils.fks_mapper import get_cities, get_accounts, get_users
 
 
@@ -36,7 +36,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    query = f"SELECT * FROM dbo.SubUsers WHERE UserID={user_id} ORDER BY SubUserID"
+    last_id = get_last_ingested(user_id, 'dbo.SubUsers')
+
+    query = f"SELECT * FROM dbo.SubUsers WHERE UserID={user_id} AND SubUserID > {last_id} ORDER BY SubUserID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.SubUsers')
     return df
@@ -62,6 +64,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
             
     df['ContactNo'] = df['ContactNo'].apply(clean_contact)
 
+    roles = {'manager':'AccountManager', 'technician':'Technician', 'assistant':'Assistant', 'cashier':'Cashier'}
+    df['Designation'] = df['UserType'].map(lambda x: roles.get(x.lower(),'AccountOwner') if isinstance(x,str) else 'AccountOwner')
     df['UserType'] = 'User'
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
@@ -74,12 +78,13 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['LockoutEnabled'] = 0
     df['AccessFailedCount'] = 0
 
+    df['UserName'] = df['UserName'].map(lambda x: x.replace(' ','') if isinstance(x,str) else None)
     df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
     df['NormalizedUserName'] = df['NormalizedEmail']
+    df.loc[df['NormalizedUserName'].duplicated(), 'NormalizedUserName'] = None
 
     df['OldCityID'] = pd.to_numeric(df['OldCityID'], errors='coerce')
 
-    df['Designation'] = 'AccountOwner'
     df['PasswordHash'] = os.getenv('NU_PASSWORD')
     df['PasscodeHash'] = os.getenv('NU_PASSWORD')
     df['SecurityStamp'] = os.getenv('SEC_STAMP')
@@ -89,15 +94,18 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_accounts(engine, df['OldUserID']), on='OldUserID', how='left')
 
     df.drop(columns={'OldCityID', 'OldUserID'}, inplace=True)
+    df.sort_values(by='OldID', inplace=True)
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
-    account_id = int(df.loc[0,'AccountID']) # type: ignore
+    
+    user_acc = df[['AccountID', 'OldID']].copy()
+
     df.drop(columns='AccountID', inplace=True)
 
     try:
@@ -120,10 +128,12 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info(f'dbo.SubUsers loaded successfully')
 
             log.info('app.UserAccounts Loading...')
-            user_ids = get_users(conn, df['OldID'])['Id'].values.tolist() # type: ignore
-
-            fill_useraccounts(conn, account_id, user_ids) # type: ignore
+            user_acc = pd.merge(user_acc, pd.read_sql("SELECT ID AS UserID, OldID FROM app.AspNetUsers WHERE UserType='User'", conn), on='OldID', how='inner')
+            user_acc.drop(columns='OldID', inplace=True)
+            fill_useraccounts(conn, user_acc) 
             log.info(f'app.UserAccounts loaded successfully')
+
+            update_last_ingested(user_id, 'dbo.SubUsers', int(df['OldID'].max()))
 
     except Exception as e:
         log.error(f'Failed to load dbo.Users: {e}')
@@ -143,7 +153,7 @@ def main(user_id: int, if_load:bool=True):
     print(df)
     
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
     
 
 # if __name__ == '__main__':

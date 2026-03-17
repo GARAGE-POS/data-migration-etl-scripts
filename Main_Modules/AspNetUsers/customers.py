@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger, clean_contact
+from utils.tools import get_last_ingested, get_logger, clean_contact, update_last_ingested
 from utils.fks_mapper import get_custom
 
 warnings.filterwarnings('ignore')
@@ -35,7 +35,8 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    query = f"SELECT * FROM dbo.Customers WHERE UserID={user_id} ORDER BY CustomerID"
+    last_id = get_last_ingested(0, 'dbo.Customers')
+    query = f"SELECT * FROM dbo.Customers WHERE CustomerID > {last_id} ORDER BY CustomerID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Customers')
     return df
@@ -78,7 +79,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
     df['NormalizedUserName'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
-
+    df.loc[df['NormalizedUserName'].duplicated(), 'NormalizedUserName'] = None
 
     df = pd.merge(df, get_custom(engine, ['OldLocationID, CityID'], 'app.Locations', 'OldLocationID'), on='OldLocationID', how='left')
     df = pd.merge(df, get_custom(engine, ['CityID', 'CountryID'], 'app.Cities'), on='CityID', how='left')
@@ -91,7 +92,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
@@ -111,8 +112,13 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldID column.")
 
-            df.to_sql('AspNetUsers', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.Customers loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('AspNetUsers', con=engine, schema='app', if_exists='append', index=False, chunksize=10000, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(0, 'dbo.Customers', int(df.iloc[5000*i:5000*(i+1)]['OldID'].max()))             
+            log.info(f"Batch {i+1} inserted.")
+            i+=1           
+        log.info(f'dbo.Customers loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.Customers: {e}')
@@ -133,7 +139,7 @@ def main(user_id: int, if_load:bool=True):
 
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
     
 
 # if __name__ == '__main__':
