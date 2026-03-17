@@ -7,8 +7,8 @@ from sqlalchemy.exc import OperationalError
 from urllib.parse import quote_plus
 import pandas as pd
 import numpy as np
-from utils.tools import get_logger, fix_order_checkout
-from utils.fks_mapper import get_custom, get_users, get_locations, get_cars, get_customers
+from utils.tools import get_last_ingested, get_logger, fix_order_checkout, update_last_ingested
+from utils.fks_mapper import get_bays, get_custom, get_users, get_locations, get_cars, get_customers
 from utils.custom_err import IncrementalDependencyError
 
 
@@ -38,20 +38,21 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 
 # -------------------- Extract --------------------
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
-    """Extract data based on CDC."""
+    """Extract data based on UserID."""
+
+    last_id = get_last_ingested(user_id, 'dbo.Orders')
 
     location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
     location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
   
-    query = f"SELECT OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE LocationID IN {location_ids}"
+    query = f"SELECT OrderID, LocationID, TransactionNo, OrderNo, CarID, CustomerID, BayID, OrderType, OrderMode, OrderTakerID, StatusID, CreatedOn, LastUpdateDT FROM dbo.Orders WHERE LocationID IN {location_ids} AND OrderID > {last_id}"
     df = pd.read_sql_query(query, engine)
 
-    order_ids = tuple(df['OrderID'].values.tolist()) + (0,0)
-    order_checkout = pd.read_sql(f'SELECT OrderID, OrderStatus, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE OrderID IN {order_ids}', engine)
+    order_checkout = pd.read_sql(f'SELECT OrderID, OrderStatus, AmountTotal, AmountDiscount, Tax, GrandTotal, AmountPaid, DiscountPercent, RefundedAmount FROM dbo.OrderCheckout WHERE LocationID IN {location_ids} AND OrderID > {last_id}', engine)
     order_checkout = order_checkout.groupby('OrderID', as_index=False).agg({k:('sum' if k not in ['DiscountPercent','OrderStatus'] else 'max') for k in order_checkout.columns})
 
 
-    order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN {order_ids}', engine)
+    order_details = pd.read_sql(f'SELECT OrderID, DiscountAmount AS ItemDiscountTotal FROM dbo.OrderDetail WHERE OrderID IN (SELECT OrderID FROM dbo.Orders WHERE LocationID IN {location_ids} AND OrderID > {last_id})', engine)
     order_details = order_details.groupby('OrderID', as_index=False).sum()
 
     df = pd.merge(df, order_checkout, on='OrderID', how='left')
@@ -88,12 +89,12 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     # Clean strings: strip & lowercase
     for col in df.select_dtypes(include='object').columns:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
-            
+    df['OldCarID'] = pd.to_numeric(df['OldCarID'], errors='coerce')
 
     # Clean nulls
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
-    df['LastServiceStatusID'] = df['LastServiceStatusID'].fillna(1)
-    df['LastServiceStatusID'] = df['LastServiceStatusID'].map(lambda x: 105 if x==103 else x)
+    df['LastServiceStatusID'] = df['LastServiceStatusID'].fillna(0)
+    df['LastServiceStatusID'] = df['LastServiceStatusID'].map(lambda x: {103:105, 105:100}.get(x, x)) # type: ignore
     df['Subtotal'] = df['Subtotal'].fillna(0)
     df['OrderDiscountTotal'] = df['OrderDiscountTotal'].fillna(0)
     df['ItemDiscountTotal'] = df['ItemDiscountTotal'].fillna(0)
@@ -102,16 +103,12 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
     df['GrandTotal'] = df['GrandTotal'].fillna(0)
     df['AmountPaidTotal'] = df['AmountPaidTotal'].fillna(0)
     df['RefundAmountTotal'] = df['RefundAmountTotal'].fillna(0)
-    df['LastOrderPaymentStatusID'] = df[['LastOrderPaymentStatusID', 'RefundAmountTotal']].apply(lambda row: 305 if row['LastOrderPaymentStatusID']==103 and row['RefundAmountTotal'] > 0 else 303 if row['LastOrderPaymentStatusID']==103 else  306 if row['LastOrderPaymentStatusID'] == 106 else row['LastOrderPaymentStatusID'], axis=1)
+    df['LastOrderPaymentStatusID'] = df['LastOrderPaymentStatusID'].map({103:303,105:308,106:306,108:307})
+    df['LastOrderPaymentStatusID'] = df[['LastOrderPaymentStatusID', 'RefundAmountTotal']].apply(lambda row: 305 if row['LastOrderPaymentStatusID']==303 and row['RefundAmountTotal'] > 0 else row['LastOrderPaymentStatusID'], axis=1)
     df['LastOrderPaymentStatusID'] = df['LastOrderPaymentStatusID'].fillna(308)
     df['OldBayID'] = pd.to_numeric(df['OldBayID'], errors='coerce')
     df['OrderType'] = df['OldCarID'].map(lambda x: 0 if isinstance(x, int) else 1)
-
-    # Fixing OrderCheckOuts
-    df = df.apply(fix_order_checkout, axis=1) # type: ignore
     df['AmountDueTotal'] = df['GrandTotal'] - df['AmountPaidTotal']
-    df.loc[df['OrderDiscountTotal']== 0, 'OrderDiscountTotal'] = df[['OrderDiscountPercent','Subtotal']].apply(lambda row: (row['OrderDiscountPercent'] * row['Subtotal'])/100, axis=1) 
-    df.loc[df['OrderDiscountPercent']== 0, 'OrderDiscountPercent'] = df[['OrderDiscountTotal','Subtotal']].apply(lambda row: 0 if row['Subtotal']==0 else row['OrderDiscountTotal'] / row['Subtotal'], axis=1) 
 
 
     # Fix OrderNo
@@ -126,30 +123,32 @@ def transform(df: pd.DataFrame, target: Engine) -> pd.DataFrame:
         raise IncrementalDependencyError(f'Missing LocationIDs: {missing_locs}. Update Locations Table.')
 
 
-    df = pd.merge(df, get_cars(target, df['OldCarID']), on='OldCarID', how='left')
+    df = pd.merge(df, get_cars(target), on='OldCarID', how='left')
 
 
-    df = pd.merge(df, get_users(target, df['OldID']), on='OldID', how='left')
+    df = pd.merge(df, get_users(target), on='OldID', how='left')
     df.rename(columns={'Id':'OrderTakerID'}, inplace=True)
     df.drop(columns='OldID', inplace=True)
     missing_ot = df['OrderTakerID'].isna().sum()
     if missing_ot:
-        raise IncrementalDependencyError(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
+        log.info(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
+        # raise IncrementalDependencyError(f'Missing OrderTakerIDs: {missing_ot}. Update AspNetUsers Table.')
     
     df.rename(columns={'CustomerID':'OldID'}, inplace=True)
     df = pd.merge(df, get_customers(target, df['OldID']), on='OldID', how='left')
 
         
-    df = pd.merge(df, get_custom(target, ['BayID', 'OldBayID'], 'app.Bays', 'OldBayID'), on='OldBayID', how='left')
+    df = pd.merge(df, get_bays(target), on='OldBayID', how='left')
 
 
-    df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID', 'OrderMode'}, inplace=True)
+    df.drop(columns={'OldLocationID', 'OldCarID', 'OldBayID', 'OldID', 'OrderMode', 'RefundAmountTotal'}, inplace=True)
+    df.sort_values(by='OldOrderID', inplace=True)
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id:int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
@@ -169,8 +168,13 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldOrderID column.")
 
-            df.to_sql('Orders', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.Orders loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('Orders', con=engine, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.Orders', int(df.iloc[5000*i:5000*(i+1)]['OldOrderID'].max()))
+            log.info(f'Batch {i+1} inserted')
+            i+=1
+        log.info(f'dbo.Orders loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.Orders: {e}')
@@ -190,7 +194,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':

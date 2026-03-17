@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_items, get_packages, get_custom
 from utils.custom_err import IncrementalDependencyError
 
@@ -38,6 +38,8 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
+    last_id = get_last_ingested(user_id, 'dbo.OrderDetail')
+
     order_query = f"""
         SELECT OrderID
         FROM dbo.Orders
@@ -48,11 +50,7 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
         )
     """
 
-    order_ids = pd.read_sql(order_query, engine)
-    order_ids = (0,0) + tuple(order_ids['OrderID'].values.tolist())
-    
-    
-    query = f"SELECT OrderDetailID, OrderID, ItemID, PackageID, Description, Quantity, Price, Cost, DiscountAmount, RefundAmount, RefundQty, StatusID, CreatedOn, CreatedBy, LastUpdateDT, LastUpdateBy  FROM dbo.OrderDetail WHERE OrderID IN {order_ids}"
+    query = f"SELECT OrderDetailID, OrderID, ItemID, PackageID, Description, Quantity, Price, Cost, DiscountAmount, RefundAmount, RefundQty, StatusID, CreatedOn, CreatedBy, LastUpdateDT, LastUpdateBy  FROM dbo.OrderDetail WHERE OrderID IN ({order_query}) AND Quantity >= 1 AND OrderDetailID > {last_id}"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.OrderDetail')
 
@@ -87,12 +85,11 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     # Clean nulls
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
+    df.loc[df['CreatedOn'].isna(), 'CreatedOn'] = df['UpdatedAt']
     df['LineItemStatus'] = df['LineItemStatus'].fillna(1)
     df['TaxAmount'] = 0
     df['TaxPercent'] = 0
     df['IsInclusiveVAT'] = 0
-    df['RefundedTaxAmount'] = 0
-    df['UnitCost'] = df['UnitCost'].fillna(0)
     df['DiscountAmount'] = df['DiscountAmount'].fillna(0)
     df['RefundedAmount'] = df['RefundedAmount'].fillna(0)
     df['RefundedQuantity'] = df['RefundedQuantity'].fillna(0)
@@ -114,6 +111,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['OldItemID'] = df['OldItemID'].fillna(1)
 
     df['IsFreeItem'] = df['DiscountPercent'] == 100
+    df['UnitPrice'] = df['UnitPrice'].fillna(0)
+    df['UnitCost'] = df['UnitCost'].fillna(0)
 
 
     df = pd.merge(df, get_custom(engine, ['OrderID', 'OldOrderID', 'OrderDiscountTotal'], 'app.Orders'), on='OldOrderID', how='left')
@@ -131,14 +130,15 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_items(engine, df['OldItemID']), on='OldItemID', how='left')
 
 
-    df.drop(columns={'OldItemID', 'OldPackageID', 'OldOrderID', 'OrderDiscountTotal'}, inplace=True)
+    df.drop(columns={'OldItemID', 'OldPackageID', 'OldOrderID', 'OrderDiscountTotal','RefundedAmount','RefundedQuantity'}, inplace=True)
+    df.sort_values(by='OldOrderDetailID', inplace=True)
 
 
     log.info(f'Transformation complete, df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
@@ -158,8 +158,13 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldOrderDetailID column.")
 
-            df.to_sql('OrderLineItems', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.OrderDetail loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('OrderLineItems', con=engine, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.OrderDetail', int(df.iloc[5000*i:5000*(i+1)]['OldOrderDetailID'].max()))
+            log.info(f'Batch {i+1} inserted')
+            i+=1
+        log.info(f'dbo.OrderDetail loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.OrderDetail: {e}')
@@ -179,7 +184,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':
