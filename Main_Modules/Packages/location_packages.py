@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 
 log = get_logger('LocationPackages')
@@ -35,10 +35,12 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
+    last_id = get_last_ingested(user_id, 'app.LocationPackages')
+
     account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
     account_id = int(account_id['AccountID']) # type: ignore
 
-    query = f"SELECT PackageID, AccountID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Packages WHERE AccountID={account_id} ORDER BY PackageID"
+    query = f"SELECT PackageID, AccountID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Packages WHERE AccountID={account_id} AND PackageID > {last_id} ORDER BY PackageID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from app.Packages')
     return df
@@ -53,7 +55,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     missing_loc = df['LocationID'].isna().sum()
     if missing_loc:
         log.warning(f'Missing LocationIDs: {missing_loc}')
-        raise IncrementalDependencyError('Update Categories Table.')
+        raise IncrementalDependencyError('Update Locations Table.')
 
 
     df.drop(columns={'CategoryID', 'AccountID'}, inplace=True)
@@ -62,7 +64,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
@@ -70,6 +72,7 @@ def load(df: pd.DataFrame, engine: Engine):
         with engine.begin() as conn:  # Transaction-safe
 
             df.to_sql('LocationPackages', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'app.LocationPackages', int( df['PackageID'].max() ))
             log.info(f'app.LocationPackages loaded successfully')
 
     except Exception as e:
@@ -89,7 +92,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()

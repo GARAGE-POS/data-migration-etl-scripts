@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_items, get_custom
 from utils.custom_err import IncrementalDependencyError
 
@@ -36,10 +36,11 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
     
-    package_ids = pd.read_sql(f'SELECT PackageID FROM dbo.Packages WHERE UserID={user_id}', engine)
-    package_ids = (0,0) + tuple(package_ids['PackageID'].values.tolist())
+    last_id = get_last_ingested(user_id, 'dbo.PackageDetails')
 
-    query = f"SELECT * FROM dbo.PackageDetails WHERE PackageID IN {package_ids} ORDER BY PackageDetailID "
+    packages_query = f'SELECT PackageID FROM dbo.Packages WHERE UserID={user_id}'
+
+    query = f"SELECT * FROM dbo.PackageDetails WHERE PackageID IN ({packages_query}) AND PackageDetailID > {last_id} ORDER BY PackageDetailID "
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.PackageDetails')
     return df
@@ -57,8 +58,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
             }, 
         inplace=True)
 
-    
-    df = pd.merge(df, get_custom(engine, ['PackageID', 'OldPackageID', 'UpdatedAt', 'CreatedAt'], 'app.Packages'), on='OldPackageID', how='left')
+    df = pd.merge(df, pd.read_sql(f"SELECT PackageID, OldPackageID, UpdatedAt, CreatedAt FROM app.Packages WHERE OldPackageID IS NOT NULL",engine), on='OldPackageID', how='left')
     missing_packs = df['PackageID'].isna().sum()
     if missing_packs:
         log.warning(f'Missing PackageIDs: {missing_packs}')
@@ -70,7 +70,6 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         log.warning(f'Missing ItemIDs: {missing_items}')
         raise IncrementalDependencyError('Update Items Table.')    
 
-    
     df.drop(columns={'OldPackageID', 'OldItemID'}, inplace=True)
 
 
@@ -78,7 +77,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
@@ -99,6 +98,7 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldPackageDetailID column.")
 
             df.to_sql('PackageDetails', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.PackageDetails', int(df['OldPackageDetailID'].max()))
             log.info(f'dbo.PackageDetails loaded successfully')
 
     except Exception as e:
@@ -119,8 +119,8 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
-        # return
+        load(df, user_id, target)
+
 
 # if __name__ == '__main__':
 #     main()

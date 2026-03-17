@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_categories, get_custom, get_accounts
 from utils.custom_err import IncrementalDependencyError
 
@@ -36,7 +36,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    query = f"SELECT * FROM dbo.Packages WHERE UserID={user_id} ORDER BY PackageID "
+    last_id = get_last_ingested(user_id, 'dbo.Packages')
+
+    query = f"SELECT * FROM dbo.Packages WHERE UserID={user_id} AND PackageID > {last_id} ORDER BY PackageID "
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Packages')
     return df
@@ -60,7 +62,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     for col in df.select_dtypes(include='object').columns:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
             df[col] = df[col].apply(lambda x: x if isinstance(x,str) and x != 'NULL' else None)
-
 
     # Sync AccountID and CategoryID
     df = pd.merge(df, get_accounts(target_db), on='OldUserID', how='left')
@@ -89,7 +90,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
@@ -110,6 +111,7 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldPackageID column.")
 
             df.to_sql('Packages', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.Packages', int(df['OldPackageID'].max()))
             log.info(f'dbo.Packages loaded successfully')
 
     except Exception as e:
@@ -130,7 +132,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':
