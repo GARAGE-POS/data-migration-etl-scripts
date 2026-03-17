@@ -42,7 +42,7 @@ def extract_old(engine: Engine) -> pd.DataFrame:
 def extract_new(engine: Engine) -> pd.DataFrame:
     """Extract data."""
 
-    query = f"SELECT ServiceID, Name FROM app.Services"
+    query = f"SELECT ServiceID, Name FROM app.Services WHERE ServiceID >= 23"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from app.Services')
     return df
@@ -52,8 +52,8 @@ def join(old_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
 
 
 
-    old_data['Name'] = old_data['Name'].map(lambda x: x.replace('Car', '').strip().lower())
-    new_data['Name'] = new_data['Name'].map(lambda x: x.replace('Service', '').replace('Car', '').strip().lower())
+    old_data['Name'] = old_data['Name'].map(lambda x: x.replace('Car', '').replace('Tyers ', 'Tires').replace('raming', 'ramming').strip().lower())
+    new_data['Name'] = new_data['Name'].map(lambda x: x.replace('Car', '').replace('Battery Shops', 'Batteries').replace('Auto Electrical', 'Electricity').strip().lower())
 
 
     joined_data = pd.merge(new_data, old_data, how='inner', on='Name')
@@ -78,7 +78,7 @@ def main(if_load:bool=True):
             name='SyncServices',
             con=target,
             schema='app',
-            if_exists='append',
+            if_exists='replace',
             index=False,
         )
         log.info('Services are Synchronized')

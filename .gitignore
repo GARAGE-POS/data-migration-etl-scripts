@@ -20,3 +20,6 @@ uv.lock
 *.csv
 *.ipynb
 *.sql
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
