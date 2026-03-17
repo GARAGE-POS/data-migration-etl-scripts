@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger, clean_contact, normalize_ranges
+from utils.tools import get_last_ingested, get_logger, clean_contact, normalize_ranges, time_line, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 from utils.fks_mapper import get_accounts, get_cities, get_custom
 
@@ -38,8 +38,10 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 # -------------------- Extract --------------------
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract new rows based on UserID."""
+
+    last_id = get_last_ingested(user_id, 'dbo.Locations')
  
-    query = f"SELECT * FROM dbo.Locations WHERE UserID={user_id} ORDER BY LocationID"
+    query = f"SELECT * FROM dbo.Locations WHERE UserID={user_id} AND LocationID > {last_id} ORDER BY LocationID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Locations')
     return df
@@ -128,18 +130,19 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     # SocialMedia Adjustements
     social_media = get_custom(source_db, ['LocationID', 'Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], 'dbo.Receipt')
     for col in social_media.select_dtypes(include='object').columns:
-        social_media[col] = social_media[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
-    social_media.dropna(subset=['Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], how='all', inplace=True)
-    social_media.drop_duplicates(subset=['LocationID', 'Facebook', 'Twitter', 'Instagram', 'TikTok', 'Snapchat'], inplace=True)
+        social_media[col] = social_media[col].apply(lambda x: x.strip() if isinstance(x,str) and (x.strip()!='' or len(x.strip()) > 3) else None)
+    social_media.drop_duplicates(subset=['LocationID'], inplace=True)
     social_media.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
-    social_media = social_media.groupby('OldLocationID').apply(lambda x: x.drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="SocialMediaJson")
+    social_media = social_media.groupby('OldLocationID').apply(lambda x: x.dropna(axis=1).drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="SocialMediaJson")
 
     # WorkingHours Adjustements
-    workinghours = get_custom(source_db, ['LocationID','Time AS WorkingHours'], 'dbo.LocationWorkingHours')
+    workinghours = get_custom(source_db, ['LocationID', 'Name','Time'], 'dbo.LocationWorkingHours')
     workinghours.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
-    workinghours.drop_duplicates(subset='OldLocationID', inplace=True)
-    workinghours['WorkingHours'] = workinghours['WorkingHours'].map(lambda x: x.replace(' ', ''))
-    workinghours['WorkingHours'] = workinghours['WorkingHours'].apply(normalize_ranges)
+    # workinghours.drop_duplicates(subset='OldLocationID', inplace=True)
+    workinghours['Time'] = workinghours['Time'].map(lambda x: x.replace(' ', ''))
+    workinghours['Time'] = workinghours['Time'].apply(normalize_ranges).apply(time_line)
+    workinghours.dropna(subset=['Time'], inplace=True)
+    workinghours = workinghours.groupby('OldLocationID').apply(lambda x: dict(zip(x['Name'], x['Time']))).reset_index(name='WorkingHours')
 
     # Images Adjustements
     images = get_custom(source_db, ['LocationID', 'Image'], 'dbo.LocationImages')
@@ -155,16 +158,17 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     df = pd.merge(df, images, on='OldLocationID', how='left')
 
     df['LocationImagesJson'] = df['LocationImagesJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
-    df['SocialMediaJson'] = df['SocialMediaJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
+    df['SocialMediaJson'] = df['SocialMediaJson'].map(lambda x: {} if x==[] or pd.isna(x) else x[0]).apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else pd.NA) 
     df['ServicesJson'] = df['ServicesJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
     df['AmenitiesJson'] = df['AmenitiesJson'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, list) else pd.NA) 
+    df['WorkingHours'] = df['WorkingHours'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else pd.NA) 
 
     df[['WorkingHours', "LocationImagesJson", "SocialMediaJson", "ServicesJson", "AmenitiesJson"]] = df[['WorkingHours', "LocationImagesJson", "SocialMediaJson", "ServicesJson", "AmenitiesJson"]].astype("string")
 
     df['LocationImagesJson'] = df['LocationImagesJson'].fillna('[]')
-    df['SocialMediaJson'] = df['SocialMediaJson'].fillna('{}')
     df['ServicesJson'] = df['ServicesJson'].fillna('[]')
     df['AmenitiesJson'] = df['AmenitiesJson'].fillna('[]')
+    df['WorkingHours'] = df['WorkingHours'].fillna('{}')
 
    # Dropping columns
     df.drop(
@@ -180,12 +184,10 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
     dtype_mapping = {col: NVARCHAR(None) for col in df.select_dtypes(include=['object', 'string']).columns}
     dtype_mapping['Longitude'] = DECIMAL(9, 6) # type: ignore
     dtype_mapping['Latitude'] = DECIMAL(9, 6) # type: ignore
-
-    max_id = df['OldLocationID'].max()
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -203,6 +205,7 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldLocationID column.")
 
             df.to_sql('Locations', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) #type: ignore
+            update_last_ingested(user_id, 'dbo.Locations', int(df['OldLocationID'].max()))
             log.info(f'dbo.Locations loaded successfully')                
     except Exception as e:
         log.error(f'Failed to load dbo.Locations: {e}')
@@ -218,9 +221,11 @@ def main(user_id:int, if_load:bool=True):
         log.info('No new data to load.')
         return
     df = transform(df, source, target)
+
     print(df)
+    
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()
