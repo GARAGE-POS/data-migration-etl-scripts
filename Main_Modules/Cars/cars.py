@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.fks_mapper import get_customers, get_custom
-from utils.tools import get_logger, parse_date
+from utils.tools import get_last_ingested, get_logger, parse_date, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 
 log = get_logger('Cars')
@@ -37,7 +37,8 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    query = f"SELECT * FROM dbo.Cars WHERE UserID={user_id} ORDER BY CarID"
+    last_id = get_last_ingested(user_id, 'dbo.Cars') 
+    query = f"SELECT * FROM dbo.Cars WHERE UserID={user_id} AND CarID > {last_id} ORDER BY CarID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Cars')
     return df
@@ -70,7 +71,8 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
 
 
     # Sync CustomerID and ModelID
-    df = pd.merge(df, get_customers(target_db, df['OldID']), on='OldID', how='left')
+    df = pd.merge(df, get_customers(target_db), on='OldID', how='left')
+    df['CustomerID'] = df['CustomerID'].fillna(640)
     missing_cust = df['CustomerID'].isna().sum()
     if missing_cust:
         log.warning(f'Missing CustomerIDs: {missing_cust}.')
@@ -88,9 +90,9 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
 
     df['CreatedAt'] = df['UpdatedAt']
     if int(missing_update.sum()) > 0:
-        car_ids = tuple(df[df['UpdatedAt'].isna()]['OldCarID'].values.tolist()) + (0,0)
-        ids = str(car_ids)
-        dates = pd.read_sql(f"SELECT CarID, LastUpdatedDate, CreatedOn FROM dbo.CarsLocation_Junc WHERE CarID IN {ids} ORDER BY CarID, CreatedOn", source_db)
+        car_ids = set(df[df['UpdatedAt'].isna()]['OldCarID'].values.tolist())
+        dates = pd.read_sql(f"SELECT CarID, LastUpdatedDate, CreatedOn FROM dbo.CarsLocation_Junc ORDER BY CarID, CreatedOn", source_db)
+        dates = dates[dates['CarID'].isin(car_ids)]
 
         if len(dates):
             dates.set_index('CarID', drop=False, inplace=True)
@@ -113,15 +115,17 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
         raise ValueError("Some of 'CreatedAt' or 'UpdatedAt' values are missing.")
 
     df.drop(columns={'OldID', 'OldMakeID', 'OldModelID'}, inplace=True)
+    df.sort_values(by='OldCarID', inplace=True)
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id:int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
-    
+
+
     try:
         with engine.begin() as conn:  # Transaction-safe
 
@@ -138,8 +142,14 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldCarID column.")
 
-            df.to_sql('Cars', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.Cars loaded successfully')
+
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('Cars', con=engine, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.Cars', int(df.iloc[5000*i:5000*(i+1)]['OldCarID'].max())) 
+            log.info(f"Batch {i+1} inserted.")
+            i+=1
+        log.info(f'dbo.Cars loaded successfully')
 
 
     except Exception as e:
@@ -160,7 +170,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':

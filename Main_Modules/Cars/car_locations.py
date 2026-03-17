@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_locations, get_custom
 from utils.custom_err import IncrementalDependencyError
 
@@ -38,10 +38,13 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
     car_ids = pd.read_sql(f'SELECT CarID FROM dbo.Cars WHERE UserID={user_id}', engine)
-    car_ids = (0,0) + tuple(car_ids['CarID'].values.tolist())
+    car_ids = set(car_ids['CarID'].values.tolist())
+
+    last_id = get_last_ingested(user_id, 'dbo.CarsLocation_Junc')
  
-    query = f"SELECT * FROM dbo.CarsLocation_Junc WHERE CarID IN {car_ids} AND UserID={user_id} ORDER BY CarLocationID"
+    query = f"SELECT * FROM dbo.CarsLocation_Junc WHERE UserID={user_id} AND CarLocationID > {last_id} ORDER BY CarLocationID"
     df = pd.read_sql_query(query, engine)
+    df = df[df['CarID'].isin(car_ids)]
     log.info(f'Extracted {len(df)} rows from dbo.CarsLocation_Junc')
     return df
 
@@ -87,7 +90,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -105,8 +108,13 @@ def load(df: pd.DataFrame, engine: Engine):
             """))
             log.info("Verified/Added OldCarLocationID column.")
 
-            df.to_sql('CarLocations', con=conn, schema='app', if_exists='append', index=False) # type: ignore
-            log.info(f'dbo.CarsLocation_Junc loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('CarLocations', con=engine, schema='app', if_exists='append', index=False) # type: ignore
+            update_last_ingested(user_id, 'dbo.CarsLocation_Junc', int(df.iloc[5000*i:5000*(i+1)]['OldCarLocationID'].max()))             
+            log.info(f"Batch {i+1} inserted.")
+            i+=1            
+        log.info(f'dbo.CarsLocation_Junc loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.CarsLocation_Junc: {e}')
@@ -125,7 +133,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
         
 
 # if __name__ == '__main__':
