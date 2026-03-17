@@ -58,7 +58,10 @@ def join(old_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
         'Ta if':"Ta'if",
         'Kuwait':'Kuwait City',
         'Salala':'Salalah',
-        'Masqat':'Muscat'
+        'Masqat':'Muscat',
+        'Quassim':'Qassim',
+        'al-Salimiya':'Salmiya',
+        'Al-Ahsa':'Al Ahsa'
     }
 
     old_data = old_data.rename(columns={'ID':'OldCityID', 'Name':'CityName'})
@@ -94,6 +97,11 @@ def main(if_load:bool=True):
     df = df[['CityID','OldCityID', 'CountryID']]
 
     df.dropna()
+
+    df.loc[df['OldCityID']==2439, ['CityID','CountryID']] = [179,9]
+    df.loc[df['OldCityID']==2441, ['CityID','CountryID']] = [298,15]
+
+    df.drop_duplicates(subset='OldCityID', inplace=True)
 
     if if_load:
         df.to_sql(
