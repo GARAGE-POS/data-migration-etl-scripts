@@ -1,9 +1,6 @@
-import os
+import json
 import re
 import logging
-import hashlib
-import base64
-import struct
 import pandas as pd
 from datetime import datetime
 from sqlalchemy import Connection, Engine, text
@@ -134,9 +131,11 @@ def fix_app_sources(text: str) -> str:
 
 
 
-def fill_useraccounts(conn: Connection, account_id: int, user_ids: list):
+def fill_useraccounts(conn: Connection, df: pd.DataFrame):
 
-    values = ','.join([f'({account_id}, {user_id})' for user_id in user_ids])
+    df = df[['AccountID', 'UserID']]
+
+    values = ','.join([f'({account_id}, {user_id})' for account_id, user_id in df.values.tolist()])
 
     conn.execute(text(f''' 
             MERGE app.UserAccounts o
@@ -149,90 +148,44 @@ def fill_useraccounts(conn: Connection, account_id: int, user_ids: list):
         ''')) 
 
 
-# TIME_REGEX = re.compile(
-#     r'\b\d{1,2}(:\d{2})?\s*(AM|PM)?\b',
-#     re.I
-# )
+def filter_subscriptions(text: str) -> bool:
 
-# def normalize_time(t: str) -> str | None:
-#     """
-#     Convert a time string to 24h HH:MM format.
-#     Returns None if invalid or ambiguous.
-#     """
-#     t = t.strip().upper()
+    keywords = ['Garage GO - Software Bundle', 'Garage POS - Starter', 'Garage POS Starter', 'Karage POS', 'Software Bundle']
 
-#     # Reject ambiguous plain numbers (e.g. "9")
-#     if re.fullmatch(r'\d{1,2}', t):
-#         return None
-
-#     # Add minutes if missing (e.g. "9 AM" -> "9:00 AM")
-#     if re.fullmatch(r'\d{1,2}\s*(AM|PM)', t):
-#         t = t.replace(' ', ':00 ')
-
-#     try:
-#         # 12-hour format
-#         if 'AM' in t or 'PM' in t:
-#             return datetime.strptime(t, '%I:%M %p').strftime('%H:%M')
-
-#         # 24-hour format
-#         return datetime.strptime(t, '%H:%M').strftime('%H:%M')
-
-#     except ValueError:
-#         return None
+    for keyword in keywords:
+        if keyword in text:
+            return True
+    
+    return False
 
 
-# def normalize_ranges(text: str) -> str | None:
-#     """
-#     Extract all valid times from a string and return
-#     a normalized 24h range string joined by '-'.
-#     """
-#     times = []
-
-#     for match in TIME_REGEX.finditer(text):
-#         normalized = normalize_time(match.group())
-#         if normalized:
-#             times.append(normalized)
-
-#     return "-".join(times) if times else None
+def get_last_ingested(account_id: int, table: str) -> int:
+    with open('last_ingested.json', 'r') as f:
+        data = json.load(f)
+    return data.get(str(account_id), {}).get(table, 0)
 
 
+def update_last_ingested(account_id: int, table: str, row_id: int) -> None:
+    with open('last_ingested.json', 'r') as f:
+        data = json.load(f)
+
+    if not data.get(str(account_id)):
+        data[str(account_id)] = {}
+
+    data[str(account_id)][table] = row_id
+
+    with open('last_ingested.json', 'w') as f:
+        json.dump(data, f, indent=2)
 
 
+def time_line(time: str) -> list[dict[str, str]] | None:
 
-# TIME_REGEX = re.compile(
-#     r'\b\d{1,2}(:\d{2})?\s*(AM|PM)?\b',
-#     re.I
-# )
+    if isinstance(time, str):
 
-# def normalize_time(t):
-#     t = t.strip().upper()
+        schedule = time.split('-')
 
-#     # Add :00 if missing minutes (e.g. "9 AM")
-#     if re.match(r'^\d+\s*(AM|PM)$', t):
-#         t = t.replace(' ', ':00 ')
-
-#     # 12-hour format
-#     if 'AM' in t or 'PM' in t:
-#         return datetime.strptime(t, '%I:%M %p').strftime('%H:%M')
-
-#     # 24-hour format
-#     return datetime.strptime(t, '%H:%M').strftime('%H:%M')
-
-
-# def normalize_ranges(text):
-
-
-#     matches = TIME_REGEX.finditer(text)
-
-
-#     # Split on dash, comma, or multiple spaces
-#     parts = re.split(r'\s*-\s*|\s*,\s*', text)
-
-#     times = []
-#     for part in parts:
-#         # Extract time tokens
-#         matches = re.findall(r'\d{1,2}(:\d{2})?\s*(AM|PM)?', part, re.I)
-#         if matches:
-#             times.append(normalize_time(part))
-
-#     return "-".join(times)
+        if len(schedule) == 2:
+            return [{'opening': schedule[0], 'closing':schedule[1]},{'opening':'', 'closing':''}] 
+        
+        if len(schedule) == 4:
+            return [{'opening': schedule[0], 'closing':schedule[1]},{'opening':schedule[2], 'closing':schedule[3]}] 

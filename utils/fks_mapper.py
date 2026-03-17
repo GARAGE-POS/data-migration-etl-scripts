@@ -70,7 +70,7 @@ def get_order_details(engine: Engine, old_order_detail_ids: pd.Series | None = N
     return pd.read_sql("SELECT LineItemID AS OrderDetailID, OldOrderDetailID FROM app.OrderLineItems WHERE OldOrderDetailID IS NOT NULL", engine)
 
 def get_items(engine: Engine, old_item_ids : pd.Series) -> pd.DataFrame:
-    item_ids = tuple(old_item_ids.dropna().values.tolist()) + (0,0)
+    item_ids = tuple(set(old_item_ids.dropna().values.tolist())) + (0,0)
     query = text(f"""
         SELECT ItemID, OldItemID
         FROM app.SyncItems s
@@ -82,7 +82,7 @@ def get_items(engine: Engine, old_item_ids : pd.Series) -> pd.DataFrame:
     return pd.read_sql(query, engine)
 
 def get_categories(engine: Engine, old_cat_ids : pd.Series) -> pd.DataFrame:
-    cat_ids = tuple(old_cat_ids.dropna().values.tolist()) + (0,0)
+    cat_ids = tuple(set(old_cat_ids.dropna().values.tolist())) + (0,0)
     query = text(f"""
             SELECT s.OldCategoryID, c.CategoryID
             FROM app.synccategories s
@@ -117,6 +117,16 @@ def get_warehouses(engine: Engine) -> pd.DataFrame:
 def get_stock_transfers(engine: Engine) -> pd.DataFrame:
     return pd.read_sql(f"SELECT TransferID AS StockTransferID, OldStockIssueID FROM app.StockTransfers WHERE OldStockIssueID IS NOT NULL", engine)
 
+def get_addons(engine: Engine) -> pd.DataFrame:
+    return pd.read_sql("SELECT AddOnID, AddOnName FROM app.AddOns", engine)
+
+def get_bays(engine: Engine) -> pd.DataFrame:
+    return pd.read_sql("SELECT BayID, OldBayID FROM app.Bays WHERE OldBayID IS NOT NULL", engine)
 
 
+def get_discounts(engine: Engine) -> pd.DataFrame:
+    return pd.read_sql("SELECT DiscountID, OldDiscountID FROM app.Discounts WHERE OldDiscountID IS NOT NULL", engine)
 
+
+def get_company_clients(engine: Engine) -> pd.DataFrame:
+    return pd.read_sql("SELECT CompanyClientID, OldCompanyClientID FROM app.CompanyClients WHERE OldCompanyClientID IS NOT NULL", engine)
