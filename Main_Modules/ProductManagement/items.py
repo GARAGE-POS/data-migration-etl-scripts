@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
 import json
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 from utils.fks_mapper import get_custom
 
@@ -52,7 +52,7 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """
 
     subcat_ids = pd.read_sql(subcat_query, engine)
-    subcat_ids = (0,0) + tuple(subcat_ids['SubCategoryID'].values.tolist())
+    subcat_ids = (0,0) + tuple(set(subcat_ids['SubCategoryID'].values.tolist()))
 
     query = f"SELECT * FROM dbo.Items WHERE SubCatID IN {subcat_ids}"
     df = pd.read_sql_query(query, engine)
@@ -78,7 +78,6 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
         'SubCatID':'SubCategoryID',
         'LastUpdatedDate':'UpdatedAt',
     })
-
     # Fix String columns
     for col in df.select_dtypes(include='object').columns:
         if col != 'Name':
@@ -86,19 +85,12 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
         else: 
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else '')
     
-
     # Fix Null values
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['CreatedAt'] = df['UpdatedAt']
     df['IsInclusiveVAT'] = 0
     df['StatusID'] = df['StatusID'].fillna(1)
     df['PropertiesJSON'] = df['SubCatName'].map(lambda x: json.dumps({'SubCategory': x}, ensure_ascii=False))
-
-
-    for col in df.select_dtypes(include='object').columns:
-            df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
-            df[col] = df[col].apply(lambda x: x if isinstance(x,str) and x != 'NULL' else None)
-
 
     log.info(f'{df['IsInventoryItem'].isna().sum()} rows with missing InventoryItem')
     df['IsInventoryItem'] = df['IsInventoryItem'].fillna(False)
@@ -130,14 +122,15 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 
     old_cat_ids = pd.read_sql(f"SELECT AccountID, Name, OldCategoryID FROM app.SyncCategories", target_db)
     new_cat_ids = pd.read_sql(f"SELECT AccountID, Name, CategoryID FROM app.Categories", target_db)
-    # new_cat_ids = pd.read_sql(f"SELECT AccountID, Name, CategoryID FROM app.Categories WHERE CategoryID in (1938, 1939, 1940, 1941, 1942, 1943, 1944, 1971, 1972, 1973)", target_db)
 
     current_cat_ids = pd.merge(old_cat_ids, new_cat_ids, how='left', on=['AccountID', 'Name'])
     current_cat_ids.drop(columns=['AccountID', 'Name'], inplace=True)
 
+    print(current_cat_ids)
+
     df = pd.merge(df, current_cat_ids, on='OldCategoryID', how='left')
 
-
+  
     # UnitID Matching
     current_unit_ids = pd.read_sql(f"SELECT UnitID, OldUnitID FROM app.SyncUnits WHERE OldUnitID IS NOT NULL", target_db)
     df = pd.merge(df, current_unit_ids, on='OldUnitID', how='left')
@@ -148,30 +141,47 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
 
 
     # Handling Duplicates
+    df = df.sort_values('OldItemID').set_index('OldItemID', drop=False)
+    df.index.name = None
     sync_table = df[['OldItemID', 'CategoryID','Name']].copy()
 
     df.sort_values(by=['CategoryID', 'StatusID', 'Price'], ascending=[True, True, False], inplace=True)
-    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'OldItemID', 'SubCatName'], inplace=True)
-
     df.drop_duplicates(subset=['CategoryID','Name'], inplace=True)
     
+    df.sort_values('OldItemID', inplace=True)
+    df.drop(columns=['SubCategoryID', 'OldCategoryID', 'OldUnitID', 'ItemType', 'OldItemID', 'SubCatName'], inplace=True)
 
     log.info(f'Transformation complete, output: {len(df)}')
     return df, sync_table
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, sync_t: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, sync_t: pd.DataFrame, user_id:int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
+    last_id = get_last_ingested(user_id, 'dbo.Items') 
+
+    df = df.loc[last_id+1:]
+    sync_t = sync_t.loc[last_id+1:]
+
+    if len(sync_t) == 0:
+        log.info('No data to load.')
+        return
+
+    log.info(f'df rows to be loaded: {len(df)}')
+
+  
     try:
-        with engine.begin() as conn:  # Transaction-safe
+        with engine.begin() as conn: 
 
+            # Inserting the Data
             df.to_sql('Items', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.Items loaded successfully')
-
             sync_t.to_sql('SyncItems', con=conn, schema='app', if_exists='append', index=False, dtype={'Name':NVARCHAR(None)}) # type: ignore
-            log.info(f'app.SyncItems updated successfully')
+
+            update_last_ingested(user_id, 'dbo.Items', int(sync_t['OldItemID'].max()))
+
+        log.info(f'dbo.Items loaded successfully')
+    
 
     except Exception as e:
         log.error(f'Failed to load dbo.Items: {e}')
@@ -188,10 +198,9 @@ def main(user_id:int, if_load:bool=True):
         return
     
     df,sync_table = transform(df, source, target)
-    print(df)
 
     if if_load:
-        load(df, sync_table, target)
+        load(df, sync_table, user_id, target)
         
 
 # if __name__ == '__main__':

@@ -2,10 +2,10 @@ import os
 import warnings
 from dotenv import load_dotenv
 from datetime import datetime
-from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
+from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 
 warnings.filterwarnings('ignore')
@@ -80,33 +80,45 @@ def transform(df: pd.DataFrame, engine: Engine) -> tuple[pd.DataFrame, pd.DataFr
         raise IncrementalDependencyError(f"Update Accounts and Locations tables.")
     
     # DROP DUPLICATED 
+    df = df.sort_values('OldCategoryID').set_index('OldCategoryID', drop=False)
+    df.index.name = None
     sync_table = df[['OldCategoryID', 'AccountID', 'Name']].copy()
     df.sort_values(by=['AccountID', 'StatusID'], inplace=True)
     df.drop_duplicates(subset=['AccountID', 'Name'], inplace=True)
 
 
-    df.drop(columns=['OldLocationID'], inplace=True)
+    df = df.sort_values('OldCategoryID')
+    df.drop(columns=['OldLocationID', 'OldCategoryID'], inplace=True)
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df, sync_table
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, sync_table: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, sync_t: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {'Name':NVARCHAR(None), 'NameAr':NVARCHAR(None), 'ImagePath':NVARCHAR(None), 'Description':NVARCHAR(None)}
 
-    df.drop(columns='OldCategoryID', inplace=True)
+    last_id = get_last_ingested(user_id, 'dbo.Category') 
+
+    df = df.loc[last_id+1:]
+    sync_t = sync_t.loc[last_id+1:]
+
+    if len(sync_t) == 0:
+        log.info('No data to load.')
+        return
+
+    log.info(f'df rows to be loaded: {len(df)}')
+
 
     try:
+
         with engine.begin() as conn: 
 
-            # Inserting the Data
             df.to_sql('Categories', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            log.info(f'dbo.Category loaded successfully')
+            sync_t.to_sql('SyncCategories', con=conn, schema='app', if_exists='append', index=False, dtype={'Name':NVARCHAR(None)}) # type: ignore
+            update_last_ingested(user_id, 'dbo.Category', int(sync_t['OldCategoryID'].max()))
 
-            sync_table.to_sql('SyncCategories', con=conn, schema='app', if_exists='append', index=False, dtype={'Name':NVARCHAR(None)}) # type: ignore
-            log.info(f'app.SyncCategories updated successfully')
-
+        log.info(f'dbo.Category loaded successfully')
     
     except Exception as e:
         log.error(f'Failed to load dbo.Category: {e}')
@@ -123,10 +135,9 @@ def main(user_id:int, if_load:bool=True):
         return
     
     df, sync_table = transform(df, target)
-    print(df)
 
     if if_load:
-        load(df, sync_table, target)
+        load(df, sync_table, user_id, target)
         
     
 # if __name__ == '__main__':
