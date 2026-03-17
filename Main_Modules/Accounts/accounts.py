@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger, clean_contact
+from utils.tools import fill_useraccounts, get_last_ingested, get_logger, clean_contact, update_last_ingested
 
 warnings.filterwarnings('ignore')
 load_dotenv()
@@ -34,7 +34,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    query = f"SELECT * FROM dbo.Users WHERE UserID={user_id}"
+    last_id = get_last_ingested(0, 'dbo.Users')
+
+    query = f"SELECT * FROM dbo.Users WHERE UserID={user_id} AND UserID > {last_id} ORDER BY UserID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Users')
     return df
@@ -76,6 +78,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     df['CRNo'] = ''    
     df['CompanyCode'] = df['CompanyCode'].fillna('')
     df['VATNo'] = pd.to_numeric(df['VATNo'], errors='coerce')
+    df['BusinessServiceJson'] = '[]'
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
@@ -83,22 +86,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, engine: Engine):
 
-    dtype_mapping = {
-            'CompanyName': NVARCHAR(None),             # NVARCHAR(MAX)
-            'RepresentativeFirstName': NVARCHAR(None),
-            'RepresentativeLastName': NVARCHAR(None),
-            'RepresentativeContactNo': NVARCHAR(None),
-            'CompanyContactNo': NVARCHAR(None),
-            'CompanyNameAr': NVARCHAR(None),
-            'CRNo': NVARCHAR(None),
-            'CompanyEmail': NVARCHAR(None),
-            'PrimaryBusiness': NVARCHAR(None),
-            'CompanyCode': NVARCHAR(None),
-            'ExternalID': NVARCHAR(None),
-            'SocialMediaJson': NVARCHAR(None),
-            'BrandThumbnailImage': NVARCHAR(None),
-            'ImagePath': NVARCHAR(None),
-            }
+    dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -117,6 +105,13 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldUserID column.")
 
             df.to_sql('Accounts', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            
+            log.info('app.UserAccounts Loading...')
+            user_acc = pd.read_sql('SELECT AccountID, 1 AS UserID FROM app.Accounts', conn)
+            fill_useraccounts(conn, user_acc)
+            log.info(f'app.UserAccounts loaded successfully')
+
+            # update_last_ingested(0, 'dbo.Users', int(df['OldUserID'].max()))
             log.info(f'dbo.Users loaded successfully')
 
 
