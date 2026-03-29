@@ -34,9 +34,12 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    last_id = get_last_ingested(0, 'dbo.Users')
+    ingested = get_last_ingested(user_id, 'dbo.Users')
 
-    query = f"SELECT * FROM dbo.Users WHERE UserID={user_id} AND UserID > {last_id} ORDER BY UserID"
+    if ingested:
+        return pd.DataFrame()
+
+    query = f"SELECT * FROM dbo.Users WHERE UserID={user_id} ORDER BY UserID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Users')
     return df
@@ -84,7 +87,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
@@ -111,7 +114,7 @@ def load(df: pd.DataFrame, engine: Engine):
             fill_useraccounts(conn, user_acc)
             log.info(f'app.UserAccounts loaded successfully')
 
-            # update_last_ingested(0, 'dbo.Users', int(df['OldUserID'].max()))
+            update_last_ingested(user_id, 'dbo.Users', 1)
             log.info(f'dbo.Users loaded successfully')
 
 
@@ -132,7 +135,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()

@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 
 warnings.filterwarnings('ignore')
 load_dotenv()
@@ -35,6 +35,11 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 # -------------------- Extract --------------------
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
 
+    ingested = get_last_ingested(user_id, 'app.AccountPaymentModes')
+
+    if ingested:
+        return pd.DataFrame()
+    
     df = pd.read_sql_query( f"SELECT AccountID, StatusID FROM app.Accounts WHERE OldUserID={user_id}", engine)
     log.info(f'Extracted {len(df)} rows from app.Accounts')
 
@@ -55,13 +60,14 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
 
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
     
     try:
         with engine.begin() as conn: 
 
             # Inserting the Data
             df.to_sql('AccountPaymentModes', con=conn, schema='app', if_exists='append', index=False) # type: ignore
+            update_last_ingested(user_id, 'app.AccountPaymentModes', 1)
             log.info(f'app.AccountPaymentModes loaded successfully')
 
     except Exception as e:
@@ -81,7 +87,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
     
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()
