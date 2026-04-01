@@ -27,12 +27,31 @@ SEC_STAMP=security_stamp
 ```
 
 
-### 3. Configure Script
+### 3. Incremental Sync (`last_ingested.json`)
+The script maintains a `last_ingested.json` file to track the last processed record ID per dataset.
+
+- On each run, only **new records** (IDs greater than the last ingested) are migrated
+- This allows safe re-runs while the source system is still receiving data
+- The file is automatically updated after successful processing
+
+**Reset behavior:**
+- Modify `last_ingested.json` to reprocess data from an earlier point or from scratch
+
+**Note that the tracking for `Accounts`, `AccountPayments`, `Subscriptions`, `SubscriptionAddons` migrations is a binary value which indicates the migration is done or not.**
+
+
+### 4. Database Setup 
+The goal of this step is to add the necessiry tables and constraints so that the migration works (one time run):
+```bash
+python db_setup.py
+```
+
+### 5. Configure Script
 Edit `main.py`:
 
 ```python
-user_id = 2089   # User to migrate
-load_db = 0      # 0 = dry run, 1 = write to DB
+user_ids = [1,2,3, ...]   # Users to migrate
+load_db = 1      # 0 = dry run, 1 = write to DB
 ```
 
 Control which migrations run by commenting/uncommenting:
@@ -44,20 +63,8 @@ account_payment(user_id, load_db==1)
 # location_settings(user_id, load_db==1)
 ```
 
-### 4. Incremental Sync (`last_ingested.json`)
-The script maintains a `last_ingested.json` file to track the last processed record ID per dataset.
 
-- On each run, only **new records** (IDs greater than the last ingested) are migrated
-- This allows safe re-runs while the source system is still receiving data
-- The file is automatically updated after successful processing
-
-**Reset behavior:**
-- Modify `last_ingested.json` to reprocess data from an earlier point or from scratch
-
-**Note that the tracking doesn't work for `Accounts`, `AccountPayments`, `Subscriptions`, `SubscriptionAddons` migrations**
-
-
-### 5. Run the Script
+### 6. Run the Script
 ```bash
 python main.py
 ```
