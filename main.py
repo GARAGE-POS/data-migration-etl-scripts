@@ -1,12 +1,3 @@
-from Template_Tables.sync_units import main as units
-from Template_Tables.sync_amenities import main as amenities
-from Template_Tables.sync_app_sources import main as app_sources
-from Template_Tables.sync_cities import main as cities
-from Template_Tables.sync_landmarks import main as landmarks
-from Template_Tables.sync_payment_modes import main as payment_modes
-from Template_Tables.sync_services import main as services
-from Template_Tables.sync_makes import main as makes
-from Template_Tables.sync_models import main as models
 from Main_Modules.Accounts.accounts import main as accounts
 from Main_Modules.Locations.locations import main as locations
 from Main_Modules.Locations.location_settings import main as location_settings
@@ -50,86 +41,151 @@ from Settings.Roles.subuser_roles import main as subuser_roles
 
 def main():
     
-
-    user_id = 2089
+    user_ids = []
     load_db = 1
 
-    # # Template tables sync (ONE TIME RUN!)
-    # makes()
-    # models()
-    # app_sources(load_db==1)
-    # cities(load_db==1)
-    # amenities(load_db==1)
-    # landmarks(load_db==1)
-    # payment_modes(load_db==1)
-    # units(load_db==1)
-    # services(load_db==1)
 
-    # # Account & Locations
-    accounts(user_id, load_db==1)
-    account_payment(user_id, load_db==1)
-    locations(user_id, load_db==1)
-    location_settings(user_id, load_db==1)
+    for user_id in user_ids:
 
-    # # Users & Customers
-    # users(user_id, load_db==1)
-    # customers(user_id, load_db==1)
-    # customer_locations(user_id, load_db==1)
-    # bays(user_id, load_db==1)
+        if not user_ids:
+            return
 
-    # # Roles & Permissions 
-    # account_role_claims(user_id, load_db==1)
-    # subuser_roles(user_id, load_db==1)
-    
-    # # Discounts
-    # discounts(user_id, load_db==1)
-    # discount_locations(user_id, load_db==1)
+        # # Account & Locations
+        for i in range(3):
+            try:
+                accounts(user_id, load_db==1)
+                account_payment(user_id, load_db==1)
+                locations(user_id, load_db==1)
+                location_settings(user_id, load_db==1)
+            except:
+                continue
+            break
+            
 
-    # # Cars
-    # cars(user_id, load_db==1)
-    # car_locations(user_id, load_db==1)
+        # # Users & Customers
+        for i in range(3):
+            try:
+                users(user_id, load_db==1)
+                customers(user_id, load_db==1)
+                customer_locations(user_id, load_db==1)
+                bays(user_id, load_db==1)
+            except:
+                continue
+            break
 
-    # # Product Management
-    # categories(user_id, load_db==1)
-    # items(user_id, load_db==1)
-    # location_items(user_id, load_db==1)
+        # # Roles & Permissions 
+        for i in range(3):
+            try:        
+                account_role_claims(user_id, load_db==1)
+                subuser_roles(user_id, load_db==1)
+            except:
+                continue
+            break
 
-    # # Packages
-    # packages(user_id, load_db==1)
-    # package_details(user_id, load_db==1)
-    # location_packages(user_id, load_db==1)
+        
+        # # Discounts
+        for i in range(3):
+            try:
+                discounts(user_id, load_db==1)
+                discount_locations(user_id, load_db==1)
+            except:
+                continue
+            break
 
-
-    # # Orders
-    # orders(user_id, load_db==1)
-    # order_payments(user_id, load_db==1)
-    # order_line_items(user_id, load_db==1)
-
-    
-    # # Company Clients
-    # company_clients(user_id, load_db==1)
-    # company_invoices(user_id, load_db==1)
-
-    # # Warehouses & Suppliers
-    # warehouses(user_id, load_db==1)
-    # suppliers(user_id, load_db==1)
-
-    # # Inventory
-    # reconciliations(user_id, load_db==1)
-    # purchase_orders(user_id, load_db==1)
-    # purchase_bills(user_id, load_db==1) 
-    # purchase_bill_details(user_id, load_db==1)
-    # stocks(user_id, load_db==1)
-    # stock_transfers(user_id, load_db==1)
-    # stock_transfer_details(user_id, load_db==1)
-
-    # # Subscriptions & AddOns 
-    # subscriptions(user_id, load_db==1)
-    # subscription_addons(user_id, load_db==1)
+        # # Cars
+        for i in range(3):
+            try:    
+                cars(user_id, load_db==1)
+                car_locations(user_id, load_db==1)
+            except:
+                continue
+            break
 
 
+        # # Product Management
+        for i in range(3):
+            try:
+                categories(user_id, load_db==1)
+                items(user_id, load_db==1)
+                location_items(user_id, load_db==1)
+            except:
+                continue
+            break
 
 
+        # # Packages
+        for i in range(3):
+            try:
+                packages(user_id, load_db==1)
+                package_details(user_id, load_db==1)
+                location_packages(user_id, load_db==1)
+            except:
+                continue
+            break
+
+
+        # # Orders
+        for i in range(3):
+            try:
+                orders(user_id, load_db==1)
+                order_payments(user_id, load_db==1)
+                order_line_items(user_id, load_db==1)
+            except:
+                continue
+            break
+
+        
+        # # Company Clients
+        for i in range(3):
+            try:
+                company_clients(user_id, load_db==1)
+                company_invoices(user_id, load_db==1)
+            except:
+                continue
+            break
+
+
+        # # Warehouses & Suppliers
+        for i in range(3):
+            try:
+                warehouses(user_id, load_db==1)
+                suppliers(user_id, load_db==1)
+            except:
+                continue
+            break
+
+
+        # # Purchases
+        for i in range(3):
+            try:
+                reconciliations(user_id, load_db==1)
+                purchase_orders(user_id, load_db==1)
+                purchase_bills(user_id, load_db==1) 
+                purchase_bill_details(user_id, load_db==1)
+            except:
+                continue
+            break
+
+
+        # # Stocks
+        for i in range(3):
+            try:
+                stocks(user_id, load_db==1)
+                stock_transfers(user_id, load_db==1)
+                stock_transfer_details(user_id, load_db==1)
+            except:
+                continue
+            break
+
+
+        # # Subscriptions & AddOns 
+        for i in range(3):
+            try:
+                subscriptions(user_id, load_db==1)
+                subscription_addons(user_id, load_db==1)
+            except:
+                continue
+            break
 
 
 
