@@ -31,7 +31,7 @@ from Invertory.Stocks.stocks import main as stocks
 from Invertory.Stocks.stock_transfers import main as stock_transfers
 from Invertory.Stocks.stock_transfer_details import main as stock_transfer_details
 from Invertory.Reconciliations.reconciliations import main as reconciliations
-from Invertory.Reconciliations.reconciliation_details import main as reconciliation_details
+# from Invertory.Reconciliations.reconciliation_details import main as reconciliation_details
 from Settings.Subscriptions.subscriptions import main as subscriptions
 from Settings.Subscriptions.subscription_addons import main as subscription_addons
 from Settings.Roles.account_role_claims import main as account_role_claims
