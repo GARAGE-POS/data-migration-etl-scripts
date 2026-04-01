@@ -109,7 +109,7 @@ def main():
 
     expression = transform(df)
    
-    # load(expression, target)
+    load(expression, target)
 
 if __name__ == '__main__':
     main()
