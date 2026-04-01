@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
 from utils.custom_err import IncrementalDependencyError
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_addons
 
 log = get_logger('SubscriptionAddOns')
@@ -36,6 +36,11 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
+    ingested = get_last_ingested(user_id, 'app.SubscriptionAddOns')
+
+    if ingested:
+        return pd.DataFrame()
+    
 
     df = pd.read_sql(f'SELECT AccountID, SubscriptionID, CAST(CRMID AS BIGINT) CRMID, StartDate, ExpiryDate, StatusID FROM app.Subscriptions WHERE AccountID = (SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id})', engine)
     if len(df) == 0:
@@ -84,13 +89,14 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
 
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
 
     try:
         with engine.begin() as conn:  # Transaction-safe
 
             df.to_sql('SubscriptionAddOns', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'app.SubscriptionAddOns', 1)
             log.info(f'app.SubscriptionAddOns loaded successfully')
 
     except Exception as e:
@@ -109,7 +115,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()
