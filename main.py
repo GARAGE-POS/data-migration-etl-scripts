@@ -57,7 +57,8 @@ def main():
                 account_payment(user_id, load_db==1)
                 locations(user_id, load_db==1)
                 location_settings(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
             
@@ -69,7 +70,8 @@ def main():
                 customers(user_id, load_db==1)
                 customer_locations(user_id, load_db==1)
                 bays(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -78,7 +80,8 @@ def main():
             try:        
                 account_role_claims(user_id, load_db==1)
                 subuser_roles(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -88,7 +91,8 @@ def main():
             try:
                 discounts(user_id, load_db==1)
                 discount_locations(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -97,7 +101,8 @@ def main():
             try:    
                 cars(user_id, load_db==1)
                 car_locations(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -108,7 +113,8 @@ def main():
                 categories(user_id, load_db==1)
                 items(user_id, load_db==1)
                 location_items(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -119,7 +125,8 @@ def main():
                 packages(user_id, load_db==1)
                 package_details(user_id, load_db==1)
                 location_packages(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -130,7 +137,8 @@ def main():
                 orders(user_id, load_db==1)
                 order_payments(user_id, load_db==1)
                 order_line_items(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -140,7 +148,8 @@ def main():
             try:
                 company_clients(user_id, load_db==1)
                 company_invoices(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -150,7 +159,8 @@ def main():
             try:
                 warehouses(user_id, load_db==1)
                 suppliers(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -162,7 +172,8 @@ def main():
                 purchase_orders(user_id, load_db==1)
                 purchase_bills(user_id, load_db==1) 
                 purchase_bill_details(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
@@ -173,19 +184,20 @@ def main():
                 stocks(user_id, load_db==1)
                 stock_transfers(user_id, load_db==1)
                 stock_transfer_details(user_id, load_db==1)
-            except:
+            except Exception as e:
+                print(e)
                 continue
             break
 
 
         # # Subscriptions & AddOns 
-        for i in range(3):
-            try:
-                subscriptions(user_id, load_db==1)
-                subscription_addons(user_id, load_db==1)
-            except:
-                continue
-            break
+        try:
+            subscriptions(user_id, load_db==1)
+            subscription_addons(user_id, load_db==1)
+        except Exception as e:
+            print(e)
+            continue
+        break
 
 
 
