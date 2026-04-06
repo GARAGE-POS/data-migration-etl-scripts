@@ -112,7 +112,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     # item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
     # item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
     # df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
-    df['ItemTypeID'] = 1
+    df['ItemTypeID'] = 2
 
     # CategoryID Matching    
     cat_ids = pd.read_sql(f"SELECT CategoryID, SubCategoryID FROM dbo.SubCategory", source_db)
