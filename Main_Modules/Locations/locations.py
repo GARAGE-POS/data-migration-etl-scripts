@@ -133,7 +133,7 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> pd.Data
         social_media[col] = social_media[col].apply(lambda x: x.strip() if isinstance(x,str) and (x.strip()!='' or len(x.strip()) > 3) else None)
     social_media.drop_duplicates(subset=['LocationID'], inplace=True)
     social_media.rename(columns={'LocationID':'OldLocationID'}, inplace=True)
-    social_media = social_media.groupby('OldLocationID').apply(lambda x: x.dropna(axis=1).drop(columns="OldLocationID").to_dict(orient="records")).reset_index(name="SocialMediaJson")
+    social_media = social_media.groupby('OldLocationID').apply(lambda x: x.dropna(axis=1).drop(columns="OldLocationID", errors='ignore').to_dict(orient="records")).reset_index(name="SocialMediaJson")
 
     # WorkingHours Adjustements
     workinghours = get_custom(source_db, ['LocationID', 'Name','Time'], 'dbo.LocationWorkingHours')
