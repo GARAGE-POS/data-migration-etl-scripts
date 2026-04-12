@@ -73,10 +73,9 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
-    df['ReferenceNumber'] = df['ReferenceNumber'].map(lambda x: x if pd.isna(x) else x.upper())
     df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
-    df['PONumber'] = df['OldPurchaseOrderID'].map(lambda x: f'PO-{x}')
-    df['ReferenceNumber'] = df['OldPurchaseOrderID'].map(lambda x: f'REF-{x}')
+    df['PONumber'] = df['OldPurchaseOrderID'].map(lambda x: f'PO-{x:05d}')
+    df['ReferenceNumber'] = df['OldPurchaseOrderID'].map(lambda x: f'REF-{x:05d}')
 
 
     acc_pay_modes = get_custom(engine, ['AccountID', 'AccountPaymentModeID'], 'app.AccountPaymentModes').drop_duplicates(subset='AccountID')

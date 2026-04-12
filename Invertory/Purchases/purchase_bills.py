@@ -70,15 +70,16 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
             df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) else x)
     df["OldPurchaseOrderID"] = pd.to_numeric(df["OldPurchaseOrderID"], errors='coerce')
 
-    df['StatusID'] = df['StatusID'].fillna(1)
+    df['StatusID'] = 3
+    df['AuditedByUserID'] = 1
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
 
     # Temporary Filling
     df['OldSupplierID'] = df['OldSupplierID'].fillna(df['OldSupplierID'].min())
-    df['Attachments'] = df['Attachments'].fillna('')
-    df['BillNumber'] = df['OldBillID'].map(lambda x: f'BN-{x}')
-    df['ReferenceNumber'] = df['OldBillID'].map(lambda x: f'REF-{x}')
+    df['Attachments'] = '[]'
+    df['BillNumber'] = df['OldBillID'].map(lambda x: f'BN-{x:05d}')
+    df['ReferenceNumber'] = df['OldBillID'].map(lambda x: f'REF-{x:05d}')
 
     df = pd.merge(df, get_custom(engine, ['PurchaseOrderID', 'AccountPaymentModeID', 'TermsAndConditions', 'PaymentTerms', 'OldPurchaseOrderID'], 'app.PurchaseOrders', 'OldPurchaseOrderID'), on='OldPurchaseOrderID', how='left')
     missing_purchase_orders = df.dropna(subset='OldPurchaseOrderID')['PurchaseOrderID'].isna().sum()
