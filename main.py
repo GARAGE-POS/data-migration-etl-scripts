@@ -36,12 +36,10 @@ from Settings.Subscriptions.subscriptions import main as subscriptions
 from Settings.Subscriptions.subscription_addons import main as subscription_addons
 from Settings.Roles.account_role_claims import main as account_role_claims
 from Settings.Roles.subuser_roles import main as subuser_roles
-
-
+import sys
 
 def main():
-    
-    user_ids = []
+    user_ids = [int(arg) for arg in sys.argv[1:]]
     load_db = 1
 
 
