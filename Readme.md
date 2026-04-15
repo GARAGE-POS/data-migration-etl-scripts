@@ -136,16 +136,12 @@ python main.py
 ### Orders :
 - **425** record with negative `AmountTotal`, `AmountPaid` or `GrandTotal`.
 - **2133** records **(~0.14%)** have missing `OrderTakerID`. The constraint changed to allow nulls.
-- `AmountTotal` mapped to `Subtotal` and `GrandTotal` mapped to `Total`.
+- `AmountTotal` mapped to `Subtotal`.
 - All missing records from **OrderCheckout table**'s fields have been filled with **0**.
 - **16112** records have `ServiceCharges` value of **-1**. 
-- **3NF** is violeted since `CustomerID` depends on `CarID`.
+- `LastServiceStatusID` has new mapping for IDs 103, 105: **{103: 105, 105: 100}**
+- `LastOrderPaymentStatusID` has new mapping for IDs 103, 105, 106, 108: **{103:303,105:308,106:306,108:307}** and if  `LastOrderPaymentStatusID`=103 and `RefundAmount`>0 then the ID is set to **306**.
 
-
-### Payments :
-
-### OrderTechnicians :
-- Missing records in `WorkerID` and `AssistantID` fields.
 
 
 ## Inventory
