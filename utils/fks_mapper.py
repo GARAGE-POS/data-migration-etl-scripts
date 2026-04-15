@@ -71,14 +71,24 @@ def get_order_details(engine: Engine, old_order_detail_ids: pd.Series | None = N
 
 def get_items(engine: Engine, old_item_ids : pd.Series) -> pd.DataFrame:
     item_ids = tuple(set(old_item_ids.dropna().values.tolist())) + (0,0)
-    query = text(f"""
-        SELECT ItemID, OldItemID
-        FROM app.SyncItems s
-        JOIN app.Items i
-            ON s.CategoryID = i.CategoryID 
-                 AND s.Name COLLATE Latin1_General_CS_AS = i.Name COLLATE Latin1_General_CS_AS
-        WHERE OldItemID IN {item_ids}
-    """)
+
+    if len(item_ids) < 10000:
+        query = text(f"""
+            SELECT ItemID, OldItemID
+            FROM app.SyncItems s
+            JOIN app.Items i
+                ON s.CategoryID = i.CategoryID 
+                    AND s.Name COLLATE Latin1_General_CS_AS = i.Name COLLATE Latin1_General_CS_AS
+            WHERE OldItemID IN {item_ids}
+        """)
+    else:
+        query = text(f"""
+            SELECT ItemID, OldItemID
+            FROM app.SyncItems s
+            JOIN app.Items i
+                ON s.CategoryID = i.CategoryID 
+                    AND s.Name COLLATE Latin1_General_CS_AS = i.Name COLLATE Latin1_General_CS_AS
+        """)
     return pd.read_sql(query, engine)
 
 def get_categories(engine: Engine, old_cat_ids : pd.Series) -> pd.DataFrame:
