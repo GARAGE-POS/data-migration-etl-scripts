@@ -36,10 +36,10 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
     last_id = get_last_ingested(0, 'dbo.Customers')
-    query = f"SELECT * FROM dbo.Customers WHERE CustomerID > {last_id} ORDER BY CustomerID"
+    query = f"SELECT * FROM dbo.Customers ORDER BY CustomerID"
     df = pd.read_sql_query(query, engine)
-    log.info(f'Extracted {len(df)} rows from dbo.Customers')
-    return df
+    log.info(f'Extracted {len(df[df['CustomerID'] > last_id])} rows from dbo.Customers')
+    return df if len(df[df['CustomerID'] > last_id]) > 0 else pd.DataFrame()
 
 # -------------------- Transform --------------------
 def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
@@ -53,7 +53,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         'LastUpdatedDate':'UpdatedAt',
         'Password':'PasswordHash',
         'LocationID':'OldLocationID',
-        'FullName':'FirstName',
+        'FullName':'UserName',
         'Mobile':'ContactNo',
         'CreatedOn':'CreatedAt'
         }, inplace=True)
@@ -61,6 +61,14 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     # Clean strings: strip & lowercase
     for col in df.select_dtypes(include='object').columns:
         df[col] = df[col].apply(lambda x: x.strip() if isinstance(x,str) and x.strip()!='' else None)
+
+    df['UserName'] = df['UserName'].map(lambda x: x.replace(' ','') if isinstance(x,str) else None)
+    df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
+    df['NormalizedUserName'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
+    df.loc[df['NormalizedUserName'].duplicated(), 'NormalizedUserName'] = None
+
+    last_id = get_last_ingested(0, 'dbo.Customers')
+    df = df[df['OldID'] > last_id]
             
 
     df['ContactNo'] = df['ContactNo'].apply(clean_contact)
@@ -77,9 +85,6 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['AccessFailedCount'] = 0
     df['UserType'] = 'Customer'
 
-    df['NormalizedEmail'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
-    df['NormalizedUserName'] = df['Email'].map(lambda x: x.upper() if isinstance(x,str) else None)
-    df.loc[df['NormalizedUserName'].duplicated(), 'NormalizedUserName'] = None
 
     df = pd.merge(df, get_custom(engine, ['OldLocationID, CityID'], 'app.Locations', 'OldLocationID'), on='OldLocationID', how='left')
     df = pd.merge(df, get_custom(engine, ['CityID', 'CountryID'], 'app.Cities'), on='CityID', how='left')

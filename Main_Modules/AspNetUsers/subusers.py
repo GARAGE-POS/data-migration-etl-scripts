@@ -37,11 +37,10 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
     last_id = get_last_ingested(user_id, 'dbo.SubUsers')
-
-    query = f"SELECT * FROM dbo.SubUsers WHERE UserID={user_id} AND SubUserID > {last_id} ORDER BY SubUserID"
+    query = f"SELECT * FROM dbo.SubUsers WHERE UserID={user_id} ORDER BY SubUserID"
     df = pd.read_sql_query(query, engine)
-    log.info(f'Extracted {len(df)} rows from dbo.SubUsers')
-    return df
+    log.info(f'Extracted {len(df[df['SubUserID']>last_id])} rows from dbo.SubUsers')
+    return df if len(df[df['SubUserID']>last_id]) > 0 else pd.DataFrame()
 
 # -------------------- Transform --------------------
 def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
@@ -83,6 +82,9 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['NormalizedUserName'] = df['NormalizedEmail']
     df.loc[df['NormalizedUserName'].duplicated(), 'NormalizedUserName'] = None
 
+    last_id = get_last_ingested(int(df['OldUserID'].iloc[0]), 'dbo.SubUsers')
+    df = df[df['OldID'] > last_id]
+
     df['OldCityID'] = pd.to_numeric(df['OldCityID'], errors='coerce')
 
     df['PasswordHash'] = os.getenv('NU_PASSWORD')
@@ -95,6 +97,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
 
     df.drop(columns={'OldCityID', 'OldUserID'}, inplace=True)
     df.sort_values(by='OldID', inplace=True)
+
 
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
