@@ -28,7 +28,7 @@
     "dbo.CompanyInvoice": 13165
   },
   "0": {
-    "dbo.Customers": 417782,
+    "dbo.Customers": 425126,
     "dbo.SubUsers": 7221
   },
   "190": {
@@ -350,5 +350,25 @@
     "dbo.Category": 24785,
     "dbo.Items": 786169,
     "app.LocationItems": 21577
+  },
+  "2065": {
+    "dbo.Users": 1,
+    "app.AccountPaymentModes": 1,
+    "dbo.Locations": 2522,
+    "dbo.SubUsers": 6025,
+    "app.AspNetRoleClaims": 1,
+    "app.AspNetUserRoles": 436008,
+    "dbo.Cars": 387852,
+    "dbo.CarsLocation_Junc": 406314,
+    "dbo.Category": 20315,
+    "dbo.Items": 631175,
+    "app.LocationItems": 631175,
+    "dbo.Orders": 2123215,
+    "dbo.OrderCheckout": 2140796,
+    "dbo.OrderDetail": 4242011,
+    "dbo.Stores": 3950,
+    "dbo.inv_Stock": 824942,
+    "dbo.CustomerLocation_Junc": 1011389,
+    "dbo.Bay": 8295
   }
 }
