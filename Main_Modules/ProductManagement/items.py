@@ -92,27 +92,8 @@ def transform(df: pd.DataFrame, source_db: Engine, target_db: Engine) -> tuple[p
     df['StatusID'] = df['StatusID'].fillna(1)
     df['PropertiesJSON'] = df['SubCatName'].map(lambda x: json.dumps({'SubCategory': x}, ensure_ascii=False))
 
-    log.info(f'{df['IsInventoryItem'].isna().sum()} rows with missing InventoryItem')
-    df['IsInventoryItem'] = df['IsInventoryItem'].fillna(False)
 
-    log.info(f'{df['IsOpenItem'].isna().sum()} rows with missing OpenItem')
-    df['IsOpenItem'] = df['IsOpenItem'].fillna(False)
-
-    log.info(f'{df['Cost'].isna().sum()} rows with missing Cost')
-    df['Cost'] = df['Cost'].fillna(0)
-
-    log.info(f'{df['SubCategoryID'].isna().sum()} rows with missing SubCategoryID')
-
-    log.info(f'{df['Price'].isna().sum()} rows with missing Price')
-    df['Price'] = df['Price'].fillna(0)
-
-
-    
-    # ItemTypeID MAP
-    # item_df = get_custom(target_db, ['ItemTypeID', 'Name'], 'app.ItemTypes')
-    # item_map = dict(zip(item_df['Name'].map(lambda x: x.lower().replace(' ', '').strip()), item_df['ItemTypeID']))
-    # df['ItemTypeID'] = df['ItemType'].apply(lambda x: x.lower().replace(' ', '').strip() if x else None).map(lambda x: item_map.get(x, 4))
-    df['ItemTypeID'] = 2
+    df['ItemTypeID'] = df['ItemType'].map(lambda x: 1 if x == 'service' else 2)
 
     # CategoryID Matching    
     cat_ids = pd.read_sql(f"SELECT CategoryID, SubCategoryID FROM dbo.SubCategory", source_db)

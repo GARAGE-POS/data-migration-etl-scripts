@@ -5,8 +5,9 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
+from utils.custom_err import IncrementalDependencyError
 from utils.tools import get_last_ingested, get_logger, update_last_ingested
-from utils.fks_mapper import get_custom
+from utils.fks_mapper import get_custom, get_items, get_locations
 
 warnings.filterwarnings('ignore')
 load_dotenv()
@@ -35,33 +36,49 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
-    category_query = f"""
-        SELECT CategoryID
-        FROM app.Categories
-        WHERE AccountID IN (
-            SELECT AccountID 
-            FROM app.Accounts 
-            WHERE OldUserID={user_id}    
-        )
-    """
-
     last_id = get_last_ingested(user_id, 'app.LocationItems')
 
-    query = f"SELECT ItemID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Items WHERE CategoryID IN ({category_query}) AND ItemID > {last_id}"
+    query = f"""
+        SELECT
+            i.ItemID OldItemID,
+            l.LocationID OldLocationID,
+            i.Price,
+            i.LastUpdatedDate UpdatedAt,
+            i.StatusID
+        FROM Items i
+        JOIN SubCategory sc ON sc.SubCategoryID = i.SubCatID
+        JOIN Category c ON sc.CategoryID = c.CategoryID
+        JOIN Locations l ON c.LocationID = l.LocationID
+        JOIN Users u ON l.UserID = u.UserID
+        WHERE u.UserID = {user_id} and i.ItemID > {last_id}
+        ORDER BY ItemID
+    """
+
     df = pd.read_sql_query(query, engine)
-    log.info(f'Extracted {len(df)} rows from app.Items')
+    log.info(f'Extracted {len(df)} rows from dbo.Items')
     return df
 
 # -------------------- Transform --------------------
 def transform(df: pd.DataFrame, engine: Engine) ->  pd.DataFrame:
     """Clean and transform Category data."""
-    # Keep only necessary columns and rename
-    df = pd.merge(df, get_custom(engine, ['AccountID', 'CategoryID'], 'app.Categories'), how='left', on='CategoryID')
-    
-    location_ids = pd.read_sql(f"SELECT LocationID, AccountID FROM app.Locations WHERE AccountID IN {tuple(df['AccountID'].values.tolist())+(0,0)}", engine)
-    df = pd.merge(df, location_ids, on='AccountID', how='left')
 
-    df.drop(columns=['CategoryID', 'AccountID'], inplace=True)
+    # Fix Null values
+    df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
+    df['CreatedAt'] = df['UpdatedAt']
+
+    # Keep only necessary columns and rename
+    df = pd.merge(df, get_items(engine, df['OldItemID']), on='OldItemID', how='left')
+    missing_items = df['ItemID'].isna().sum()
+    if missing_items:
+        log.warning(f'Missing ItemIDs: {missing_items}')
+        raise IncrementalDependencyError('Update Items Table.')
+        
+    df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
+    missing_loc = df['LocationID'].isna().sum()
+    if missing_loc:
+        log.warning(f'Missing LocationIDs: {missing_loc}')
+        raise IncrementalDependencyError('Update Locations Table.')
+    
 
     log.info(f'Transformation complete, df rows: {len(df)}')
     return df
@@ -69,12 +86,14 @@ def transform(df: pd.DataFrame, engine: Engine) ->  pd.DataFrame:
 # -------------------- Load --------------------
 def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
+    cols = ['ItemID', 'LocationID', 'Price', 'StatusID', 'CreatedAt', 'UpdatedAt']
+
     try:
         i = 0
         while i < len(df)/5000:
 
-            df[5000*i : 5000*(i+1)].to_sql('LocationItems', con=engine, schema='app', if_exists='append', index=False) # type: ignore
-            update_last_ingested(user_id, 'app.LocationItems', int(df[5000*i : 5000*(i+1)]['ItemID'].max()))
+            df[5000*i : 5000*(i+1)][cols].to_sql('LocationItems', con=engine, schema='app', if_exists='append', index=False) # type: ignore
+            update_last_ingested(user_id, 'app.LocationItems', int(df[5000*i : 5000*(i+1)]['OldItemID'].max()))
             log.info(f"Batch {i+1} inserted.")
             i+=1
             
@@ -87,9 +106,10 @@ def load(df: pd.DataFrame, user_id: int, engine: Engine):
 # -------------------- Main --------------------
 def main(user_id:int, if_load:bool=True):
 
+    source = source_db_conn()
     target = target_db_conn()
 
-    df = extract(user_id, target)
+    df = extract(user_id, source)
     if df.empty:
         log.info('No new data to load.')
         return

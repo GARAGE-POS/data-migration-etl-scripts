@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
+from utils.fks_mapper import get_locations
 from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.custom_err import IncrementalDependencyError
 
@@ -32,16 +33,24 @@ def source_db_conn(): return get_engine('AZURE_SERVER','AZURE_DATABASE','AZURE_U
 def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_USERNAME','STAGE_PASSWORD')
 
 # -------------------- Extract --------------------
-def extract(user_id:int, engine: Engine) -> pd.DataFrame:
+def extract(user_id:int, source: Engine, target: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
 
     last_id = get_last_ingested(user_id, 'app.LocationPackages')
 
-    account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
+    account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', target)
     account_id = int(account_id['AccountID']) # type: ignore
 
-    query = f"SELECT PackageID, AccountID, CategoryID, Price, CreatedAt, UpdatedAt, StatusID FROM app.Packages WHERE AccountID={account_id} AND PackageID > {last_id} ORDER BY PackageID"
-    df = pd.read_sql_query(query, engine)
+    query = f"SELECT PackageID, Price, CreatedAt, UpdatedAt, StatusID, OldPackageID FROM app.Packages WHERE AccountID={account_id} AND PackageID > {last_id} ORDER BY PackageID"
+    df = pd.read_sql_query(query, target)
+
+
+    query = f"SELECT PackageID AS OldPackageID, LocationID AS OldLocationID FROM dbo.Packages WHERE UserID={user_id}"
+    old_df = pd.read_sql_query(query, source)
+
+
+    df = pd.merge(df, old_df, on='OldPackageID', how='left')
+
     log.info(f'Extracted {len(df)} rows from app.Packages')
     return df
 
@@ -50,16 +59,14 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     """Clean and transform Packages data."""
 
     # Get LocationIDs
-    loc_acc_ids = pd.read_sql(f"SELECT AccountID, LocationID FROM app.Locations", engine)
-    df = pd.merge(df, loc_acc_ids, on='AccountID', how='left')
+    df = pd.merge(df, get_locations(engine), on='OldLocationID', how='left')
     missing_loc = df['LocationID'].isna().sum()
     if missing_loc:
         log.warning(f'Missing LocationIDs: {missing_loc}')
         raise IncrementalDependencyError('Update Locations Table.')
 
 
-    df.drop(columns={'CategoryID', 'AccountID'}, inplace=True)
-
+    df.drop(columns={'OldPackageID', 'OldLocationID'}, inplace=True)
     log.info(f'Transformation complete. df rows: {len(df)}')
     return df
 
@@ -81,9 +88,10 @@ def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
 # -------------------- Main --------------------
 def main(user_id:int, if_load:bool=True):
+    source = source_db_conn()
     target = target_db_conn()
 
-    df = extract(user_id, target)
+    df = extract(user_id, source, target)
     if df.empty:
         log.info('No data to load.')
         return
