@@ -141,7 +141,7 @@ python main.py
 - **16112** records have `ServiceCharges` value of **-1**. 
 - `LastServiceStatusID` has new mapping for IDs 103, 105: **{103: 105, 105: 100}**
 - `LastOrderPaymentStatusID` has new mapping for IDs 103, 105, 106, 108: **{103:303,105:308,106:306,108:307}** and if  `LastOrderPaymentStatusID`=103 and `RefundAmount`>0 then the ID is set to **306**.
-
+- In the newer database there is rounding in the values, so small calculation precision errors might occure. 
 
 
 ## Inventory
