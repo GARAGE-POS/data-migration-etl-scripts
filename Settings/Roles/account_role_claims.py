@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_permissions
 
 log = get_logger('AspNetRoleClaims')
@@ -34,6 +34,11 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 # -------------------- Extract --------------------
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
+
+    ingested = get_last_ingested(user_id, 'app.AspNetRoleClaims')
+
+    if ingested:
+        return pd.DataFrame()    
 
     account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
     account_id = int(account_id['AccountID']) # type: ignore
@@ -68,18 +73,19 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     df = pd.merge(df, get_permissions(engine),on='Role', how='left')
     
     df.drop(columns='Role', inplace=True)
-    log.info(f'Extracted {len(df)} rows from asp.AspNetRoles')
+    log.info(f'Extracted {len(df)} rows from app.AspNetRoles')
     return df
 
 
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     try:
         with engine.begin() as conn:  # Transaction-safe
 
             df.to_sql('AspNetRoleClaims', con=conn, schema='app', if_exists='append', index=False) # type: ignore
+            update_last_ingested(user_id, 'dbo.Users', 1)
             log.info(f'app.AspNetRoleClaims loaded successfully')
 
     except Exception as e:
@@ -99,7 +105,7 @@ def main(user_id:int, if_load:bool=True):
         return
     
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()

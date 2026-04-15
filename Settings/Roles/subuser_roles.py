@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, Engine, NVARCHAR
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import fill_useraccounts, get_logger
+from utils.tools import fill_useraccounts, get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_permissions
 
 log = get_logger('AspNetUserRoles')
@@ -38,7 +38,11 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     account_id = pd.read_sql(f'SELECT AccountID FROM app.Accounts WHERE OldUserID={user_id}', engine)
     account_id = int(account_id['AccountID']) # type: ignore
 
-    df = pd.read_sql(f"SELECT Id AS UserID, Designation AS RoleName FROM app.AspNetUsers WHERE Id IN (SELECT UserID FROM app.UserAccounts WHERE AccountID={account_id} AND UserID <> 1)", engine)
+    last_id = get_last_ingested(user_id, 'app.AspNetUserRoles')
+    df = pd.read_sql(f"SELECT Id AS UserID, Designation AS RoleName FROM app.AspNetUsers WHERE Id IN (SELECT UserID FROM app.UserAccounts WHERE AccountID={account_id} AND UserID <> 1) AND ID > {last_id}", engine)
+
+    if len(df) == 0:
+        return pd.DataFrame()
 
     roles = pd.read_sql(f'SELECT ID AS RoleID, Name AS RoleName FROM app.AspNetRoles WHERE AccountID={account_id}', engine)
 
@@ -59,7 +63,7 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
 
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     try:
         with engine.begin() as conn:
@@ -67,6 +71,7 @@ def load(df: pd.DataFrame, engine: Engine):
             df.to_sql(
                 name='AspNetUserRoles', con=conn, schema='app', if_exists='append', index=False
             )
+            update_last_ingested(user_id, 'app.AspNetUserRoles', int(df['UserID'].max()))
             log.info(f'app.AspNetUserRoles loaded successfully')
     
     except Exception as e:
@@ -89,7 +94,7 @@ def main(user_id:int, if_load:bool=True):
     print(df)
 
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
 
 # if __name__ == '__main__':
 #     main()
