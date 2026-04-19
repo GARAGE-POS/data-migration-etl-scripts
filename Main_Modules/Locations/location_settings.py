@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, Engine, NVARCHAR, DECIMAL
 from urllib.parse import quote_plus
 import pandas as pd
-from utils.tools import get_logger
+from utils.tools import get_last_ingested, get_logger, update_last_ingested
 from utils.fks_mapper import get_locations
 from utils.custom_err import IncrementalDependencyError
 
@@ -40,10 +40,9 @@ def target_db_conn(): return get_engine('STAGE_SERVER','STAGE_DATABASE','STAGE_U
 def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     """Extract data based on UserID."""
   
-    location_ids = pd.read_sql(f'SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}', engine)
-    location_ids = (0,0) + tuple(location_ids['LocationID'].values.tolist())
+    last_id = get_last_ingested(user_id, 'dbo.Receipt')
 
-    query = f"SELECT * FROM dbo.Receipt WHERE locationID IN {location_ids} ORDER BY ReceiptID"
+    query = f"SELECT * FROM dbo.Receipt WHERE locationID IN (SELECT LocationID FROM dbo.Locations WHERE UserID={user_id}) AND ReceiptID > {last_id} ORDER BY ReceiptID"
     df = pd.read_sql_query(query, engine)
     log.info(f'Extracted {len(df)} rows from dbo.Receipt')
     return df
@@ -92,11 +91,11 @@ def transform(df: pd.DataFrame, target_db: Engine) -> pd.DataFrame:
     return df
 
 # -------------------- Load --------------------
-def load(df: pd.DataFrame, engine: Engine):
+def load(df: pd.DataFrame, user_id: int, engine: Engine):
 
     dtype_mapping = {col:NVARCHAR(None) for col in df.select_dtypes(include='object').columns}
     
-    max_id = df['OldReceiptID'].max()
+    max_id = int(df['OldReceiptID'].max())
 
     try:
         with engine.begin() as conn:  # Transaction-safe
@@ -115,6 +114,7 @@ def load(df: pd.DataFrame, engine: Engine):
             log.info("Verified/Added OldReceiptID column.")
 
             df.to_sql('LocationSettings', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.Receipt', max_id)
             log.info(f'dbo.Receipt loaded successfully')
 
     except Exception as e:
@@ -133,7 +133,7 @@ def main(user_id:int, if_load:bool=True):
     df = transform(df, target)
     print(df)
     if if_load:
-        load(df, target)
+        load(df, user_id, target)
     
 
 # if __name__ == '__main__':
