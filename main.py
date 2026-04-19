@@ -22,6 +22,8 @@ from Orders_Payments.Orders.order_payments import main as order_payments
 from Orders_Payments.Orders.order_line_items import main as order_line_items
 from Orders_Payments.Orders.order_packages import main as order_packages
 from Orders_Payments.Payments.account_payment import main as account_payment
+from Orders_Payments.Quotations.quotations import main as quotations
+from Orders_Payments.Quotations.quotation_details import main as quotation_details
 from Invertory.Warehouses.warehouses import main as warehouses
 from Invertory.Suppliers.suppliers import main as suppliers
 from Invertory.Purchases.purchase_bills import main as purchase_bills
@@ -31,7 +33,7 @@ from Invertory.Stocks.stocks import main as stocks
 from Invertory.Stocks.stock_transfers import main as stock_transfers
 from Invertory.Stocks.stock_transfer_details import main as stock_transfer_details
 from Invertory.Reconciliations.reconciliations import main as reconciliations
-# from Invertory.Reconciliations.reconciliation_details import main as reconciliation_details
+from Invertory.Reconciliations.reconciliation_details import main as reconciliation_details
 from Settings.Subscriptions.subscriptions import main as subscriptions
 from Settings.Subscriptions.subscription_addons import main as subscription_addons
 from Settings.Roles.account_role_claims import main as account_role_claims
@@ -73,6 +75,7 @@ def main():
                 continue
             break
 
+
         # # Roles & Permissions 
         for i in range(3):
             try:        
@@ -83,16 +86,43 @@ def main():
                 continue
             break
 
-        
-        # # Discounts
+
+        # # Subscriptions & AddOns 
+        try:
+            subscriptions(user_id, load_db==1)
+            subscription_addons(user_id, load_db==1)
+        except Exception as e:
+            print(e)
+
+
+        # # Warehouses & Suppliers
         for i in range(3):
             try:
-                discounts(user_id, load_db==1)
-                discount_locations(user_id, load_db==1)
+                warehouses(user_id, load_db==1)
+                suppliers(user_id, load_db==1)
+            except Exception as e:
+                print(e)
+                continue
+            break  
+
+        
+        # # Product Management
+        categories(user_id, load_db==1)
+        items(user_id, load_db==1)
+        location_items(user_id, load_db==1)
+
+
+        # # Packages
+        for i in range(3):
+            try:
+                packages(user_id, load_db==1)
+                package_details(user_id, load_db==1)
+                location_packages(user_id, load_db==1)
             except Exception as e:
                 print(e)
                 continue
             break
+
 
         # # Cars
         for i in range(3):
@@ -105,24 +135,11 @@ def main():
             break
 
 
-        # # Product Management
+        # # Discounts
         for i in range(3):
             try:
-                categories(user_id, load_db==1)
-                items(user_id, load_db==1)
-                location_items(user_id, load_db==1)
-            except Exception as e:
-                print(e)
-                continue
-            break
-
-
-        # # Packages
-        for i in range(3):
-            try:
-                packages(user_id, load_db==1)
-                package_details(user_id, load_db==1)
-                location_packages(user_id, load_db==1)
+                discounts(user_id, load_db==1)
+                discount_locations(user_id, load_db==1)
             except Exception as e:
                 print(e)
                 continue
@@ -152,11 +169,11 @@ def main():
             break
 
 
-        # # Warehouses & Suppliers
+        # # Quotations
         for i in range(3):
             try:
-                warehouses(user_id, load_db==1)
-                suppliers(user_id, load_db==1)
+                quotations(user_id, load_db==1)
+                quotation_details(user_id, load_db==1)
             except Exception as e:
                 print(e)
                 continue
@@ -167,6 +184,7 @@ def main():
         for i in range(3):
             try:
                 reconciliations(user_id, load_db==1)
+                reconciliation_details(user_id, load_db==1)
                 purchase_orders(user_id, load_db==1)
                 purchase_bills(user_id, load_db==1) 
                 purchase_bill_details(user_id, load_db==1)
@@ -186,16 +204,6 @@ def main():
                 print(e)
                 continue
             break
-
-
-        # # Subscriptions & AddOns 
-        try:
-            subscriptions(user_id, load_db==1)
-            subscription_addons(user_id, load_db==1)
-        except Exception as e:
-            print(e)
-            continue
-        break
 
 
 
