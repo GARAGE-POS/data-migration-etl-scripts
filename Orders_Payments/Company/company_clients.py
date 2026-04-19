@@ -70,7 +70,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['AvailableCredit'] = 0
     df['OutstandingBalance'] = 0
     df['OpeningBalance'] = 0
-    df['IsCreditEnabled'] = 0
+    df['IsCreditEnabled'] = df['StatusID'].map(lambda x: 1 if x==1 else 0)
     df['IsGovernmentClient'] = 0
     df['CityID'] = 28
     df['BusinessType'] = ''
