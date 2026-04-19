@@ -69,27 +69,11 @@ def get_order_details(engine: Engine, old_order_detail_ids: pd.Series | None = N
         return pd.read_sql(f"SELECT LineItemID AS OrderDetailID, OldOrderDetailID FROM app.OrderLineItems WHERE OldOrderDetailID IN {order_detail_ids} AND OldOrderDetailID IS NOT NULL", engine)
     return pd.read_sql("SELECT LineItemID AS OrderDetailID, OldOrderDetailID FROM app.OrderLineItems WHERE OldOrderDetailID IS NOT NULL", engine)
 
-def get_items(engine: Engine, old_item_ids : pd.Series) -> pd.DataFrame:
-    item_ids = tuple(set(old_item_ids.dropna().values.tolist())) + (0,0)
-
-    if len(item_ids) < 10000:
-        query = text(f"""
-            SELECT ItemID, OldItemID
-            FROM app.SyncItems s
-            JOIN app.Items i
-                ON s.CategoryID = i.CategoryID 
-                    AND s.Name COLLATE Latin1_General_CS_AS = i.Name COLLATE Latin1_General_CS_AS
-            WHERE OldItemID IN {item_ids}
-        """)
-    else:
-        query = text(f"""
-            SELECT ItemID, OldItemID
-            FROM app.SyncItems s
-            JOIN app.Items i
-                ON s.CategoryID = i.CategoryID 
-                    AND s.Name COLLATE Latin1_General_CS_AS = i.Name COLLATE Latin1_General_CS_AS
-        """)
-    return pd.read_sql(query, engine)
+def get_items(engine: Engine, old_item_ids : pd.Series | None = None) -> pd.DataFrame:
+    if old_item_ids is not None:
+        item_ids = (0,0) + tuple(old_item_ids.dropna().values.tolist())
+        return pd.read_sql(f"SELECT ItemID, OldItemID FROM app.Items WHERE OldItemID IN {item_ids} AND OldItemID IS NOT NULL", engine)
+    return pd.read_sql("SELECT ItemID, OldItemID FROM app.Items WHERE OldItemID IS NOT NULL", engine)
 
 def get_categories(engine: Engine, old_cat_ids : pd.Series) -> pd.DataFrame:
     cat_ids = tuple(set(old_cat_ids.dropna().values.tolist())) + (0,0)
@@ -140,3 +124,7 @@ def get_discounts(engine: Engine) -> pd.DataFrame:
 
 def get_company_clients(engine: Engine) -> pd.DataFrame:
     return pd.read_sql("SELECT CompanyClientID, OldCompanyClientID FROM app.CompanyClients WHERE OldCompanyClientID IS NOT NULL", engine)
+
+
+def get_company_quotations(engine: Engine) -> pd.DataFrame:
+    return pd.read_sql("SELECT CompanyQuotationID, OldQuotationID FROM app.CompanyQuotations WHERE OldQuotationID IS NOT NULL", engine)
