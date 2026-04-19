@@ -38,8 +38,29 @@ def extract(user_id: int, engine: Engine) -> pd.DataFrame:
 
     last_id = get_last_ingested(user_id, 'dbo.inv_Stock')
 
-    query = f"SELECT StockID, StoreID, ItemID, CurrentStock, CreatedOn, LastUpdatedDate, StatusID FROM dbo.inv_Stock WHERE UserID={user_id} AND StockID > {last_id} ORDER BY StockID"
+    query = f"""
+        SELECT
+            s.StockID,
+            s.StoreID,
+            s.ItemID,
+            s.CurrentStock,
+            s.CreatedOn,
+            s.LastUpdatedDate,
+            s.StatusID,
+            ss.MinimumStock, 
+            ss.OpeningStock 
+        FROM inv_Stock s
+        JOIN Inventory i on s.ItemID = i.ItemID
+        JOIN inv_StockStore ss on s.StoreID = ss.StoreID and ss.InventoryID = i.InventoryID
+        WHERE ss.StatusID = 1 AND s.UserID={user_id} AND s.StockID > {last_id}
+    """
     df = pd.read_sql_query(query, engine)
+
+    df.sort_values(by=['ItemID', 'LastUpdatedDate'], inplace=True)
+    df.drop_duplicates(subset='ItemID', keep='last', inplace=True)
+
+    df.sort_values(by=['StockID'], inplace=True)
+
     log.info(f'Extracted {len(df)} rows from dbo.inv_Stock')
     return df
 
@@ -53,6 +74,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         "ItemID":'OldItemID',
         "StoreID":'OldStoreID',
         "CreatedOn": "CreatedAt",
+        "MinimumStock":"MinimumStockToReorder",
         'LastUpdatedDate':'UpdatedAt'
         }, inplace=True)
 
@@ -63,8 +85,8 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
-    df['MinimumStockToReorder'] = 0
-    df['OpeningStock'] = 0
+    df['MinimumStockToReorder'] = df['MinimumStockToReorder'].fillna(0)
+    df['OpeningStock'] = df['OpeningStock'].fillna(0)
     df['AvgCost'] = 0
     df['OldItemID'] = df['OldItemID'].fillna(df['OldItemID'].min())
     df['CurrentStock'] = df['CurrentStock'].fillna(0)
