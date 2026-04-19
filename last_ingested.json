@@ -1,5 +1,5 @@
 {
-  "1": {
+  "-1": {
     "dbo.Locations": 556,
     "dbo.Bay": 2815,
     "dbo.Cars": 121419,
@@ -28,7 +28,7 @@
     "dbo.CompanyInvoice": 13165
   },
   "0": {
-    "dbo.Customers": 425126,
+    "dbo.Customers": 425607,
     "dbo.SubUsers": 7221
   },
   "190": {
@@ -370,5 +370,40 @@
     "dbo.inv_Stock": 824942,
     "dbo.CustomerLocation_Junc": 1011389,
     "dbo.Bay": 8295
+  },
+  "1": {
+    "dbo.Users": 1,
+    "app.AccountPaymentModes": 1,
+    "dbo.Locations": 3307,
+    "dbo.Receipt": 4348,
+    "dbo.SubUsers": 7571,
+    "app.AspNetRoleClaims": 1,
+    "dbo.CustomerLocation_Junc": 1014608,
+    "dbo.Bay": 2815,
+    "dbo.Stores": 4567,
+    "dbo.Supplier": 801,
+    "dbo.Cars": 42444,
+    "app.AspNetUserRoles": 437726,
+    "dbo.Category": 27564,
+    "dbo.Items": 905059,
+    "dbo.Orders": 2127914,
+    "dbo.OrderCheckout": 2145495,
+    "dbo.OrderDetail": 4249047,
+    "app.LocationItems": 905059,
+    "dbo.Packages": 4613,
+    "app.LocationPackages": 18992,
+    "dbo.CompanyClients": 4660,
+    "dbo.CompanyInvoice": 13165,
+    "dbo.inv_Stock": 828305,
+    "dbo.inv_StockIssue": 13731,
+    "dbo.PackageDetails": 129070,
+    "dbo.inv_Reconciliation": 1666,
+    "dbo.inv_PurchaseOrder": 6925,
+    "dbo.inv_Bill": 26388,
+    "dbo.Inv_BillDetail": 154975,
+    "dbo.inv_StockIssueDetail": 377449,
+    "dbo.inv_ReconciliationDetail": 10837,
+    "dbo.CompanyQuotation": 3807,
+    "dbo.CompanyQuotationDetail": 19536
   }
 }
