@@ -161,4 +161,7 @@ python main.py
 - Constraint of `AuditedByUserID` changed to allow nulls.
 - `ReferenceNumber` and `BillNumber` changed to ensure uniqueness constraint.
 
+## CompanyAccount
 
+### Quotations
+- records with empty `BayerName` has been ignored since they don't have `CompanyClientID`.
