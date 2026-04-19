@@ -64,7 +64,7 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         raise IncrementalDependencyError('Update Items Table.')
 
   
-    df = pd.merge(df, get_custom(engine, ['ReconciliationID', 'OldReconciliationID', 'CreatedAt', 'UpdatedAt'], 'app.Reconciliations'), on='OldReconciliationID', how='left')
+    df = pd.merge(df, get_custom(engine, ['ReconciliationID', 'OldReconciliationID', 'CreatedAt', 'UpdatedAt'], 'app.Reconciliations', 'OldReconciliationID'), on='OldReconciliationID', how='left')
     missing_recs = df['ReconciliationID'].isna().sum()
     if missing_recs:
         log.warning(f'Missing ReconciliationIDs: {missing_recs}')
@@ -100,9 +100,13 @@ def load(df: pd.DataFrame, user_id: int, engine: Engine):
             """))
             log.info("Verified/Added OldReconciliationDetailID column.")
 
-            df.to_sql('ReconciliationDetails', con=conn, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
-            update_last_ingested(user_id, 'dbo.inv_ReconciliationDetail', int(df['OldReconciliationDetailID'].max()))
-            log.info(f'dbo.inv_ReconciliationDetail loaded successfully')
+        i = 0
+        while i < len(df)/5000:
+            df.iloc[5000*i:5000*(i+1)].to_sql('ReconciliationDetails', con=engine, schema='app', if_exists='append', index=False, dtype=dtype_mapping) # type: ignore
+            update_last_ingested(user_id, 'dbo.inv_ReconciliationDetail', int(df.iloc[5000*i:5000*(i+1)]['OldReconciliationDetailID'].max()))
+            log.info(f'Batch {i+1} inserted')
+            i+=1
+        log.info(f'dbo.inv_ReconciliationDetail loaded successfully')
 
     except Exception as e:
         log.error(f'Failed to load dbo.inv_ReconciliationDetail: {e}')
