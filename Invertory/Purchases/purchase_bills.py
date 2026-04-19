@@ -78,10 +78,10 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     # Temporary Filling
     df['OldSupplierID'] = df['OldSupplierID'].fillna(df['OldSupplierID'].min())
     df['Attachments'] = '[]'
-    df['BillNumber'] = df['OldBillID'].map(lambda x: f'BN-{x:05d}')
-    df['ReferenceNumber'] = df['OldBillID'].map(lambda x: f'REF-{x:05d}')
+    df['BillNumber'] = df['OldBillID'].map(lambda x: f'BN-{x:08d}')
+    df['ReferenceNumber'] = df['OldBillID'].map(lambda x: f'REF-{x:08d}')
 
-    df = pd.merge(df, get_custom(engine, ['PurchaseOrderID', 'AccountPaymentModeID', 'TermsAndConditions', 'PaymentTerms', 'OldPurchaseOrderID'], 'app.PurchaseOrders', 'OldPurchaseOrderID'), on='OldPurchaseOrderID', how='left')
+    df = pd.merge(df, get_custom(engine, ['PurchaseOrderID', 'PaymentMethod', 'TermsAndConditions', 'PaymentTerms', 'OldPurchaseOrderID'], 'app.PurchaseOrders', 'OldPurchaseOrderID'), on='OldPurchaseOrderID', how='left')
     missing_purchase_orders = df.dropna(subset='OldPurchaseOrderID')['PurchaseOrderID'].isna().sum()
     if missing_purchase_orders:
         log.warning(f'Missing PurchaseOrderIDs: {missing_purchase_orders}')
@@ -99,7 +99,6 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         log.warning(f'Missing WarehouseIDs: {missing_whs}')
         raise IncrementalDependencyError('Update Warehouses Table.')
 
-    df['AccountPaymentModeID'] = df['AccountPaymentModeID'].fillna(df['AccountPaymentModeID'].min())
 
     df.drop(columns=[
         'OldPurchaseOrderID', 'OldSupplierID', 'OldStoreID', 'CreatedBy', 'LastUpdatedBy', 'Date', 'LocationID', 'PaymentStatus'

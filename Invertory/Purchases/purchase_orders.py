@@ -74,11 +74,12 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
     df['StatusID'] = df['StatusID'].fillna(1)
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df.loc[df['CreatedAt'].isna(), 'CreatedAt'] = df['UpdatedAt']
-    df['PONumber'] = df['OldPurchaseOrderID'].map(lambda x: f'PO-{x:05d}')
-    df['ReferenceNumber'] = df['OldPurchaseOrderID'].map(lambda x: f'REF-{x:05d}')
+    df['PONumber'] = df['OldPurchaseOrderID'].map(lambda x: f'PO-{x:08d}')
+    df['ReferenceNumber'] = df['OldPurchaseOrderID'].map(lambda x: f'REF-{x:08d}')
+    df['PaymentMethod'] = 2
 
 
-    acc_pay_modes = get_custom(engine, ['AccountID', 'AccountPaymentModeID'], 'app.AccountPaymentModes').drop_duplicates(subset='AccountID')
+    # acc_pay_modes = get_custom(engine, ['AccountID', 'AccountPaymentModeID'], 'app.AccountPaymentModes').drop_duplicates(subset='AccountID')
 
     df = pd.merge(df, get_custom(engine, ['AccountID', 'LocationID', 'OldLocationID'], 'app.Locations'), on='OldLocationID', how='left')
     missing_locs = df['LocationID'].isna().sum()
@@ -86,11 +87,11 @@ def transform(df: pd.DataFrame, engine: Engine) -> pd.DataFrame:
         log.warning(f'Missing LocationIDs: {missing_locs}')
         raise IncrementalDependencyError('Update Locations Table.')
     
-    df = pd.merge(df, acc_pay_modes, on='AccountID', how='left')
-    missing_apmodes = df['AccountPaymentModeID'].isna().sum()
-    if missing_apmodes:
-        log.warning(f'Missing AccountPaymentModeIDs: {missing_apmodes}')
-        raise IncrementalDependencyError('Update AccountPaymentModes Table.')
+    # df = pd.merge(df, acc_pay_modes, on='AccountID', how='left')
+    # missing_apmodes = df['AccountPaymentModeID'].isna().sum()
+    # if missing_apmodes:
+    #     log.warning(f'Missing AccountPaymentModeIDs: {missing_apmodes}')
+    #     raise IncrementalDependencyError('Update AccountPaymentModes Table.')
     
     df = pd.merge(df, get_suppliers(engine), on='OldSupplierID', how='left')
     missing_supps = df['SupplierID'].isna().sum()
