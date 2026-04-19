@@ -65,9 +65,10 @@ def transform(df: pd.DataFrame, engine: Engine) ->  pd.DataFrame:
     # Fix Null values
     df['UpdatedAt'] = df['UpdatedAt'].fillna(datetime.now())
     df['CreatedAt'] = df['UpdatedAt']
+    df['StatusID'] = df['StatusID'].fillna(2)
 
-    # Keep only necessary columns and rename
-    df = pd.merge(df, get_items(engine, df['OldItemID']), on='OldItemID', how='left')
+    # IDs mapping
+    df = pd.merge(df, get_items(engine), on='OldItemID', how='left')
     missing_items = df['ItemID'].isna().sum()
     if missing_items:
         log.warning(f'Missing ItemIDs: {missing_items}')
