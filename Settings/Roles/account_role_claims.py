@@ -85,7 +85,7 @@ def load(df: pd.DataFrame, user_id: int, engine: Engine):
         with engine.begin() as conn:  # Transaction-safe
 
             df.to_sql('AspNetRoleClaims', con=conn, schema='app', if_exists='append', index=False) # type: ignore
-            update_last_ingested(user_id, 'dbo.Users', 1)
+            update_last_ingested(user_id, 'app.AspNetRoleClaims', 1)
             log.info(f'app.AspNetRoleClaims loaded successfully')
 
     except Exception as e:

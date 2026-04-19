@@ -51,8 +51,8 @@ def extract(user_id:int, engine: Engine) -> pd.DataFrame:
     missing_roles = df['RoleID'].isna()
     if missing_roles.sum():
         log.warning(f"Missing RoleIDs for Roles: {df[missing_roles]['RoleName'].drop_duplicates().values}")
-        raise ValueError('Check Designation in AspNetUsers or RoleName in AspNetRoles.')
-
+    df = df[~missing_roles]
+    
     df.drop(columns='RoleName', inplace=True)
 
     df['AccountID'] = account_id
